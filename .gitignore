@@ -1,0 +1,9 @@
+.pio/
+.native-build/
+.vscode/
+docs/*.ppm
+
+settings.md
+src/
+test/
+tools/
