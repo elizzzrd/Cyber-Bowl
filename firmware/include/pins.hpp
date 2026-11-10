@@ -4,7 +4,7 @@
 namespace Pins {
     constexpr uint8_t WATER_LEVEL_PIN = 1;
     constexpr uint8_t PUMP_PIN = 4;
-    constexpr uint8_t BUTTON_BACK_PIN = 5;
+    constexpr uint8_t BUTTON_BACK_PIN = 2;
     constexpr uint8_t BUTTON_UP_PIN = 17;
     constexpr uint8_t BUTTON_DOWN_PIN = 18;
     constexpr uint8_t BUTTON_OK_PIN = 21;

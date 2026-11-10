@@ -3,7 +3,9 @@
 .vscode/
 docs/*.ppm
 
-settings.md
-src/
-test/
-tools/
+
+cyber_bowl_camera/README.md
+cyber_bowl_tests/.vscode
+firmware/settings.md
+flash.sh
+.gitinore

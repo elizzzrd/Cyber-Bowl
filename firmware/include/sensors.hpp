@@ -9,6 +9,7 @@ struct ScaleReading {
     bool connected = false;
     bool valid = false;
 };
+
 struct SensorReadings {
     ScaleReading food;
     ScaleReading water;
