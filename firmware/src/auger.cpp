@@ -38,7 +38,7 @@ namespace
 
     volatile bool     active            = false;  
     volatile bool     stepLevelHigh     = false;  // current STEP pin level
-    volatile bool     timedOut          = false;  // has the timeout fired
+    volatile bool     timeoutReached     = false;  // has the timeout fired
     volatile uint32_t stepsCompleted    = 0;      
     volatile uint32_t stepsRequested    = 0;      // steps needed (0 = unlimited)
     volatile uint32_t ticksElapsed      = 0;      // timer ticks elapsed
@@ -56,8 +56,8 @@ namespace
 
     struct CriticalSectionISR
     {
-        CriticalSectionISR()  { portENTER_CRITICAL_ISR(&mux); }
-        ~CriticalSectionISR() { portEXIT_CRITICAL_ISR(&mux); }
+        __attribute__((always_inline)) CriticalSectionISR()  { portENTER_CRITICAL_ISR(&mux); }
+        __attribute__((always_inline)) ~CriticalSectionISR() { portEXIT_CRITICAL_ISR(&mux); }
         CriticalSectionISR(const CriticalSectionISR&)            = delete;
         CriticalSectionISR& operator=(const CriticalSectionISR&) = delete;
     };
@@ -101,7 +101,7 @@ namespace
         if (!active) return;
 
         if (++ticksElapsed >= ticksUntilTimeout) {
-            timedOut = true;
+            timeoutReached = true;
             haltOutput();
         } else {
             emitStepEdge();
@@ -160,6 +160,8 @@ namespace
 // ------------------------------------------------------------------------------------
 
 
+Auger auger;
+
 bool Auger::begin()
 {
     initPins();
@@ -207,7 +209,7 @@ bool Auger::running()
 bool Auger::timedOut()
 {
     CriticalSection lock;
-    return timedOut;
+    return timeoutReached;
 }
 
 
@@ -248,7 +250,7 @@ void Auger::prepareCounters(uint32_t pulses, uint32_t halfPeriodUs, uint32_t tim
     ticksUntilTimeout = static_cast<uint32_t>(
         static_cast<uint64_t>(timeoutMs) * 1000u / halfPeriodUs);
 
-    timedOut      = false;
+    timeoutReached = false;
     stepLevelHigh = false;
     active        = true;
 }

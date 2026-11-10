@@ -9,7 +9,7 @@
 
 int checks = 0;
 #define CHECK(condition) do { \
-    ++checks;                 \ 
+    ++checks;                 \
     if(!(condition)) {        \
         std::fprintf(stderr,"Failed line %d: %s\n", __LINE__, #condition); \
         std::exit(1); }       \

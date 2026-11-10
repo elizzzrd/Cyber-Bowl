@@ -22,7 +22,7 @@ namespace
     bool foodEverSampled = false;
     bool waterEverSampled = false;
 
-    CaptureState captureState = CaptureState::IDLE;
+    CaptureState captureStatus = CaptureState::IDLE;
     ScaleId captureTarget = ScaleId::FOOD;
     bool isCapturingTank = false;
     
@@ -46,7 +46,7 @@ namespace
 
     float getFactor(ScaleId id, const Settings::ScaleCalibration& c)
     {
-        if (c.factor > Settings::MIN_VALID_FACTOR) {
+        if (std::isfinite(c.factor) && std::fabs(c.factor) >= Settings::MIN_VALID_FACTOR) {
             return c.factor;
         }
         return (id == ScaleId::FOOD) ? Settings::DEFAULT_FOOD_SCALE_FACTOR 
@@ -61,18 +61,18 @@ namespace
 
         if (++captureSamplesCount == Settings::CAPTURE_SAMPLES) {
             captureResult = static_cast<int32_t>(captureSum / captureSamplesCount);
-            captureState = CaptureState::DONE;
+            captureStatus = CaptureState::DONE;
         }
     }
 
     bool isCapturingThisScale(ScaleId id)
     {
-        return captureState == CaptureState::BUSY && !isCapturingTank && id == captureTarget;
+        return captureStatus == CaptureState::BUSY && !isCapturingTank && id == captureTarget;
     }
 
     bool isCapturingTankNow()
     {
-        return captureState == CaptureState::BUSY && isCapturingTank;
+        return captureStatus == CaptureState::BUSY && isCapturingTank;
     }
 
     void recalculateScale(ScaleId id, ScaleReading& value, const Settings::ScaleCalibration& c)
@@ -125,10 +125,10 @@ namespace
 
     bool startCapture(bool forTank)
     {
-        if (captureState == CaptureState::BUSY) 
+        if (captureStatus == CaptureState::BUSY)
             return false;
 
-        captureState = CaptureState::BUSY;
+        captureStatus = CaptureState::BUSY;
         isCapturingTank = forTank;
         captureStartedMs = millis();
         captureSamplesCount = 0;
@@ -163,8 +163,8 @@ void Sensors::update()
     pollScale(food, data.food, foodEverSampled, ScaleId::FOOD, now);
     pollScale(water, data.water, waterEverSampled, ScaleId::WATER, now);
 
-    if (captureState == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS) {
-        captureState = CaptureState::FAILED;
+    if (captureStatus == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS) {
+        captureStatus = CaptureState::FAILED;
     }
     
     pollSlowSensors(now);
@@ -187,11 +187,11 @@ bool Sensors::captureTank()
     return startCapture(true);
 }
 
-void Sensors::cancelCapture()           { captureState = CaptureState::IDLE; }
-CaptureState Sensors::captureState()    { return captureState; }
+void Sensors::cancelCapture()           { captureStatus = CaptureState::IDLE; }
+CaptureState Sensors::captureState()    { return captureStatus; }
 uint8_t Sensors::captureProgress()      { return captureSamplesCount; }
 int32_t Sensors::capturedRaw()          { return captureResult; }
-int32_t Sensors::capturedSpan()         { return captureMax - captureMin; }
+int32_t Sensors::capturedSpan()         { return captureSamplesCount ? captureMax - captureMin : 0; }
 
 void Sensors::applySettings()
 {

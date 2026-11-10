@@ -20,3 +20,5 @@ class Auger
         void configureDriver(bool directionHigh);
         void prepareCounters(uint32_t pulses, uint32_t halfPeriodUs, uint32_t timeoutMs);
 };
+
+extern Auger auger;

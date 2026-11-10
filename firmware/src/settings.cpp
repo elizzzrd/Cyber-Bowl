@@ -12,13 +12,13 @@ namespace
 
     bool validScale(const Settings::ScaleCalibration& c)
     {
-        return std::isfinite(c.factor) && std::fabs(c.factor) >= 0.01f &&
+        return std::isfinite(c.factor) && std::fabs(c.factor) >= Settings::MIN_VALID_FACTOR &&
                std::fabs(c.factor) <= 1000000.0f && (!c.calibrated || c.tared);
     }
 
     bool validPortions(float food, float water)
     {
-        return inRange(food, 0, 200) && inRange(water, 0, 200);
+        return inRange(food, 0, Settings::MAX_FOOD_PORTION_G) && inRange(water, 0, Settings::MAX_WATER_PORTION_ML);
     }
 
  
@@ -29,8 +29,8 @@ namespace
 
     bool validLimits(const Settings::Data& d)
     {
-        return inRange(d.foodPortionG, 1, 200)                     && 
-               inRange(d.waterPortionMl, 1, 200)                   &&
+        return inRange(d.foodPortionG, 1, Settings::MAX_FOOD_PORTION_G)                     &&
+               inRange(d.waterPortionMl, 1, Settings::MAX_WATER_PORTION_ML)                   &&
                inRange(d.foodBowlMaxG, 10, 2000)                   && 
                inRange(d.waterBowlMaxG, 10, 2000)                  &&
                inRange(d.pumpMsPerMl, 10, 20000)                   &&
@@ -81,6 +81,7 @@ Settings::Data Settings::defaults()
     d.waterScale.calibrated = true;
     d.waterScale.tared = true;
 
+    d.schedule[0].hour = 8;
     d.schedule[1].hour = 20;
     d.schedule[2].hour = 12;
     d.schedule[3].hour = 16;

@@ -2,15 +2,12 @@
 #include <cstddef>
 #include <cstdint>
 
-#pragma once
-#include <cstdint>
 
 namespace Settings 
 {
     constexpr uint32_t BUTTON_DEBOUNCE_MS         = 30;
     constexpr uint32_t RTC_INTERVAL_MS            = 1000;
     constexpr uint32_t SENSOR_STALE_MS            = 2000;
-    constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
 
     constexpr uint8_t  CAPTURE_SAMPLES            = 10;
     constexpr uint32_t CAPTURE_TIMEOUT_MS         = 3000;
@@ -24,6 +21,26 @@ namespace Settings
     constexpr int32_t  HX711_RAW_MIN              = -0x800000;
     constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
     constexpr float    MIN_VALID_FACTOR           = 0.01f;
+
+    constexpr size_t SCHEDULE_COUNT = 4;
+    constexpr uint32_t DISPLAY_INTERVAL_MS = 100;
+    constexpr float MAX_FOOD_PORTION_G = 200.0f;
+    constexpr float MAX_WATER_PORTION_ML = 200.0f;
+    constexpr float SCALE_ZERO_TOLERANCE_G = 5.0f;
+    constexpr uint32_t HOPPER_EMPTY_TIMEOUT_MS = 2000;
+    constexpr float WATER_DELIVERY_MIN_FRACTION = 0.9f;
+    constexpr uint32_t US_PER_MS = 1000;
+    constexpr uint32_t MS_PER_SECOND = 1000;
+    constexpr uint32_t STEPPER_HALVES_PER_PULSE = 2;
+    constexpr uint32_t AUGER_TEST_MAX_MS = 15000;
+    constexpr uint32_t AUGER_TEST_TIMEOUT_MS = 16000;
+    constexpr uint32_t PUMP_TEST_MIN_MS = 1000;
+    constexpr uint32_t PUMP_TEST_MAX_MS = 60000;
+    constexpr uint32_t ONE_SHOT_WINDOW_SECONDS = 60;
+    constexpr uint32_t SECONDS_PER_DAY = 86400;
+    constexpr uint32_t DATE_KEY_YEAR_MULTIPLIER = 10000;
+    constexpr uint32_t DATE_KEY_MONTH_MULTIPLIER = 100;
+    constexpr size_t CONTROLLER_TEXT_CAPACITY = 112;
 
     struct ScaleCalibration {
         float factor = 0.0f;
@@ -67,10 +84,13 @@ namespace Settings
         
         uint8_t brightnessPercent = 100;
         
+        bool stepperDirectionHigh = true;
+        bool invertDisplay = false;
         bool foodPresentLow = true;
         
-        ScheduleSlot schedule[4];
+        ScheduleSlot schedule[SCHEDULE_COUNT];
         OneShot oneShot;
+        uint32_t lastRunDay[SCHEDULE_COUNT] = {};
     };
 
     Data defaults();

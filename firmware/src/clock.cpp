@@ -7,6 +7,7 @@
 
 namespace 
 {
+    constexpr uint8_t DS3231_ADDRESS = 0x68;
     RTC_DS3231 rtc;
     DateTime cached(2026, 1, 1, 0, 0, 0);
     bool available = false;
@@ -62,9 +63,9 @@ void Clock::update()
 }
 
 
-bool Clock::connected() const    { return available; }
-bool Clock::valid()     const    { return available && timeValid; }
-DateTime Clock::now()   const    { return cached; }
+bool Clock::connected()    { return available; }
+bool Clock::valid()        { return available && timeValid; }
+DateTime Clock::now()      { return cached; }
 
 
 bool Clock::set(const DateTime& date)
@@ -72,7 +73,7 @@ bool Clock::set(const DateTime& date)
     if (!available || !validDate(date)) 
         return false;
     
-        rtc.adjust(date);
+    rtc.adjust(date);
     cached = rtc.now();
     timeValid = validDate(cached) && cached.unixtime() == date.unixtime();
     lastMs = millis();

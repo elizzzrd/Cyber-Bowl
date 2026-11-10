@@ -24,7 +24,6 @@ int main()
     auto c = Settings::defaults();
     c.foodScale.factor = -400; check(Settings::valid(c));
     c.reverseSteps = c.forwardSteps; check(!Settings::valid(c));
-    c = Settings::defaults(); c.lowWaterProtection = true; check(!Settings::valid(c));
     const float oldPortion = Config::get().foodPortionG;
     c = Config::get(); c.foodPortionG = 45; Fake::nvsFail = true;
     check(!Config::commit(c)); check(Config::get().foodPortionG == oldPortion); Fake::nvsFail = false;
@@ -35,6 +34,12 @@ int main()
     check(FeedingController::info().requestedWaterMl == 35);
     Fake::sensors.water.grams = 35; FeedingController::update(); state(MachineState::IDLE);
     check(!Fake::pump && !Fake::auger);
+
+    // The threshold-based tank sensor blocks water and stops an active pump.
+    stopAndReset(); Fake::sensors.waterPresent = false;
+    check(!FeedingController::startCycle(0, 10)); state(MachineState::ERROR); check(!Fake::pump);
+    stopAndReset(); check(FeedingController::startCycle(0, 10));
+    Fake::sensors.waterPresent = false; FeedingController::update(); state(MachineState::ERROR); check(!Fake::pump);
 
     // Stale/disconnected scale aborts an active feed.
     stopAndReset(); check(FeedingController::startCycle(20, 0));
@@ -75,7 +80,7 @@ int main()
 
     // A due event during manual operation is skipped, with NVS writes deferred until stopped.
     stopAndReset(); Fake::date = DateTime(2026, 10, 12, 8, 0, 0);
-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].waterMl = 0; check(Config::commit(c));
+    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].waterMl = 0; check(Config::commit(c));
     check(FeedingController::startCycle(10, 0));
     const auto writes = Fake::nvsWrites;
     FeedingController::updateSchedule(false); check(Fake::nvsWrites == writes);
@@ -84,21 +89,21 @@ int main()
 
     // Calibration/service mode does not dispense and consumes that occurrence.
     stopAndReset(); Fake::date = DateTime(2026, 10, 13, 8, 0, 0);
-    c = Config::get(); c.schedule[0].enabled = true; check(Config::commit(c));
+    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; check(Config::commit(c));
     FeedingController::updateSchedule(true); state(MachineState::IDLE);
     Fake::date = DateTime(2026, 10, 13, 8, 0, 1); FeedingController::updateSchedule(false); state(MachineState::IDLE);
 
     // Invalid clock never starts an event; expired one-shot does not catch up.
-    stopAndReset(); c = Config::get(); c.schedule[0].enabled = true; check(Config::commit(c));
+    stopAndReset(); c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; check(Config::commit(c));
     Fake::date = DateTime(2026, 10, 14, 8, 0, 0); Fake::rtcValid = false;
     FeedingController::updateSchedule(false); state(MachineState::IDLE);
     Fake::rtcValid = true; c = Settings::defaults(); c.oneShot.enabled = true;
-    c.oneShot.dueEpoch = Fake::date.unixtime() - 120; check(Config::commit(c));
+    c.oneShot.foodG = 15; c.oneShot.dueEpoch = Fake::date.unixtime() - 120; check(Config::commit(c));
     FeedingController::updateSchedule(false); state(MachineState::IDLE); check(!Config::get().oneShot.enabled);
 
     // Coincident slots cannot cause a second unexpected meal.
     stopAndReset(); Fake::date = DateTime(2026, 10, 15, 8, 0, 0);
-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].waterMl = 0;
+    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].waterMl = 0;
     c.schedule[1] = c.schedule[0]; check(Config::commit(c));
     FeedingController::updateSchedule(false); state(MachineState::FEEDING);
     check(Config::get().lastRunDay[0] == 20261015 && Config::get().lastRunDay[1] == 20261015);
@@ -125,7 +130,7 @@ int main()
 
     // Render the REAL ui.cpp with a framebuffer display fake.
     stopAndReset(); Fake::date = DateTime(2026, 10, 8, 16, 51, 3);
-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].hour = 20; check(Config::commit(c));
+    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].hour = 20; check(Config::commit(c));
     Fake::sensors.food.grams = 12.4f; Fake::sensors.water.grams = 85.2f;
     check(Ui::begin()); draw(); Fake::screenshot("docs/home.ppm");
     const auto clears = Fake::fullScreenClears;
@@ -144,10 +149,10 @@ int main()
     press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/calibration.ppm");
     // Execute the actual UI calibration wizard: empty bowl -> known mass -> save.
     press(Pins::BUTTON_OK_PIN); Fake::completeCapture(200000); draw();
-    check(!Config::get().foodScale.calibrated); // No settings changed after the zero stage.
+    check(Config::get().foodScale.offset == 0); // No settings changed after the zero stage.
     press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_OK_PIN);
     Fake::completeCapture(240000); draw();
-    check(!Config::get().foodScale.calibrated); // Proposal is still uncommitted.
+    check(Config::get().foodScale.factor == Settings::DEFAULT_FOOD_SCALE_FACTOR); // Proposal is still uncommitted.
     press(Pins::BUTTON_OK_PIN);
     check(Config::get().foodScale.calibrated && Config::get().foodScale.tared);
     check(Config::get().foodScale.offset == 200000);
@@ -157,6 +162,7 @@ int main()
     Fake::completeCapture(200100); draw();
     check(Config::get().foodScale.offset == 200100 && Config::get().foodScale.factor == 400);
     // Execute the actual pump calibration UI: 10 s test -> measured 10 ml -> 1000 ms/ml.
+    c = Config::get(); c.pumpMsPerMl = 952; check(Config::commit(c));
     press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN);
     press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_OK_PIN);
     press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_OK_PIN);

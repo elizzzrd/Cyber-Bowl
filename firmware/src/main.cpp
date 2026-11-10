@@ -11,7 +11,7 @@ void setup()
 {
     // Outputs off first; NVS, I2C and the display initialize afterwards.
     Pump::begin();
-    const bool motorReady = Auger::begin();
+    const bool motorReady = auger.begin();
     Serial.begin(115200);
     Config::begin();
     Sensors::begin();

@@ -14,7 +14,7 @@ int main()
     Fake::hxSamples[Pins::FOOD_HX_DT_PIN].push_back(240000);
     Sensors::update();
     check(Sensors::readings().food.connected);
-    check(!Sensors::readings().food.valid); // Uncalibrated counts cannot masquerade as grams.
+    check(Sensors::readings().food.valid); // Factory calibration is available by default.
     auto c = Config::get();
     c.foodScale.offset = 200000; c.foodScale.factor = 400;
     c.foodScale.tared = c.foodScale.calibrated = true;
@@ -29,7 +29,7 @@ int main()
         Fake::advance(100); Fake::hxSamples[Pins::FOOD_HX_DT_PIN].push_back(200000 + i); Sensors::update();
     }
     check(Sensors::captureState() == CaptureState::DONE);
-    check(Sensors::capturedRaw() == 200005 && Sensors::capturedSpan() == 11);
+    check(Sensors::capturedRaw() == 200004 && Sensors::capturedSpan() == Settings::CAPTURE_SAMPLES - 1);
     Sensors::cancelCapture(); check(Sensors::capture(ScaleId::FOOD));
     Fake::advance(Settings::CAPTURE_TIMEOUT_MS + 1); Sensors::update();
     check(Sensors::captureState() == CaptureState::FAILED);
@@ -40,10 +40,11 @@ int main()
     Fake::adc = 1234; check(Sensors::captureTank());
     for (int i = 0; i < Settings::CAPTURE_SAMPLES; ++i) { Fake::advance(100); Sensors::update(); }
     check(Sensors::captureState() == CaptureState::DONE && Sensors::capturedRaw() == 1234);
-    c.tankCalibrated = true; c.tankRawEmpty = 3000; c.tankRawFull = 1000;
-    check(Config::commit(c)); Fake::adc = 2000; Fake::advance(100); Sensors::update();
-    check(Sensors::readings().tankValid && Sensors::readings().tankPercent == 50);
-    Fake::adc = 4000; Fake::advance(100); Sensors::update(); check(Sensors::readings().tankPercent == 0);
-    Fake::adc = 0; Fake::advance(100); Sensors::update(); check(Sensors::readings().tankPercent == 100);
+    Fake::adc = Settings::WATER_LEVEL_THRESHOLD;
+    Fake::advance(Settings::SLOW_SENSOR_INTERVAL_MS); Sensors::update();
+    check(!Sensors::readings().waterPresent);
+    ++Fake::adc;
+    Fake::advance(Settings::SLOW_SENSOR_INTERVAL_MS); Sensors::update();
+    check(Sensors::readings().waterPresent);
     std::cout << "PASS: " << checks << " assertions; real sensor module with queued HX711/ADC input.\n";
 }

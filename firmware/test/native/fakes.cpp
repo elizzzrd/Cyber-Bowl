@@ -38,8 +38,7 @@ void reset()
     sensors.food.connected = sensors.food.valid = true;
     sensors.water.connected = sensors.water.valid = true;
     sensors.foodAvailable = true;
-    sensors.tankValid = true;
-    sensors.tankPercent = 75;
+    sensors.waterPresent = true;
     rtcValid = true;
     augerTimeout = false;
     date = DateTime(date.unixtime() + 86401);
@@ -82,6 +81,8 @@ void Pump::begin() { off(); }
 void Pump::on() { Fake::pump = true; }
 void Pump::off() { Fake::pump = false; }
 bool Pump::running() { return Fake::pump; }
+Auger auger;
+
 bool Auger::begin() { return true; }
 bool Auger::run(bool, uint32_t, uint32_t, uint32_t) { Fake::auger = true; Fake::augerSteps = 0; return true; }
 void Auger::stop() { Fake::auger = false; }

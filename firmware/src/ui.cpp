@@ -40,20 +40,20 @@ namespace
         HOME, MAIN, MANUAL, SCHEDULE, SLOT, ONE_SHOT, SERVICE, AUGER, PUMP,
         SCALES, SCALE, SENSOR_SETTINGS, LIMITS, DISPLAY_SETTINGS, CLOCK, DIAGNOSTICS,
         EDIT, NOTICE, CONFIRM, CAL_EMPTY, CAL_CAPTURE, CAL_MASS, CAL_LOAD,
-        CAL_RESULT, PUMP_SECONDS, PUMP_VOLUME, TANK_EMPTY, TANK_FULL, PROCESS, CAMERA
+        CAL_RESULT, PUMP_SECONDS, PUMP_VOLUME, PROCESS, CAMERA
     };
     enum class Field : uint8_t {
         FOOD, WATER, SLOT_ON, SLOT_HOUR, SLOT_MINUTE, SLOT_FOOD, SLOT_WATER,
         ONE_DELAY, ONE_FOOD, ONE_WATER, STEP_PERIOD, DIRECTION, JOG_STEPS,
-        FORWARD_STEPS, REVERSE_STEPS, PUMP_FACTOR, IR_LOW, TANK_PROTECTION,
-        TANK_MIN, FOOD_LIMIT, WATER_LIMIT, FEED_TIMEOUT, WATER_TIMEOUT,
+        FORWARD_STEPS, REVERSE_STEPS, PUMP_FACTOR, IR_LOW,
+        FOOD_LIMIT, WATER_LIMIT, FEED_TIMEOUT, WATER_TIMEOUT,
         BRIGHTNESS, INVERT, YEAR, MONTH, DAY, HOUR, MINUTE
     };
     enum class Action : uint8_t {
         NONE, MANUAL, SCHEDULE, DIAGNOSTICS, SERVICE, HOME, FOOD, WATER, BOTH,
         SLOT, ONE_SHOT, ONE_ARM, ONE_CANCEL, AUGER, PUMP, SCALES, SENSOR_SETTINGS,
         LIMITS, DISPLAY_SETTINGS, CLOCK, RESET, EDIT, JOG, PUMP_TEST, PUMP_CAL,
-        FOOD_SCALE, WATER_SCALE, TARE, SCALE_CAL, TANK_CAL, CLOCK_SAVE, RTC_RETRY,
+        FOOD_SCALE, WATER_SCALE, TARE, SCALE_CAL, CLOCK_SAVE, RTC_RETRY,
         BACK, CAMERA
     };
     struct Row {
@@ -90,7 +90,7 @@ namespace
     int clockYear = 2026, clockMonth = 1, clockDay = 1, clockHour = 12, clockMinute = 0;
     ScaleId scaleId = ScaleId::FOOD;
     bool tareOnly = false;
-    int captureStage = 0; // 0 = tare/empty, 1 = loaded, 2 = empty tank, 3 = full tank.
+    int captureStage = 0; // 0 = tare/empty, 1 = loaded.
     int32_t zeroRaw = 0;
     int32_t zeroSpan = 0;
     float knownMassG = 100;
@@ -250,11 +250,8 @@ namespace
         }
         case Page::SENSOR_SETTINGS:
             addBool("Корм при LOW", c.foodPresentLow, Field::IR_LOW);
-            add("Калибровка бака", "Пустой / полный", Action::TANK_CAL);
-            addBool("Защита без воды", c.lowWaterProtection, Field::TANK_PROTECTION);
-            addField("Минимум воды", c.minTankPercent, "%", Field::TANK_MIN);
-            snprintf(text, sizeof(text), "%ld / %ld", static_cast<long>(c.tankRawEmpty), static_cast<long>(c.tankRawFull));
-            add("ADC: пуст / полон", text);
+            snprintf(text, sizeof(text), "%d", Sensors::readings().tankRaw);
+            add("Бак: ADC", text);
             snprintf(text, sizeof(text), "%d", Sensors::readings().irRaw); add("ИК: сигнал GPIO", text);
             break;
         case Page::LIMITS:
@@ -288,20 +285,20 @@ namespace
         editSelection = selection;
         editFirstVisible = firstVisible;
         snprintf(editLabel, sizeof(editLabel), "%s", row.label);
-        editMin = 0; editMax = 200; editStep = 1;
+        editMin = 0; editMax = 0; editStep = 1;
         const auto& c = Config::get();
         const auto& slot = c.schedule[editingSlot];
         switch (editField) {
-        case Field::FOOD: editValue = c.foodPortionG; editMin = 1; break;
-        case Field::WATER: editValue = c.waterPortionMl; editMin = 1; break;
+        case Field::FOOD: editValue = c.foodPortionG; editMax = Settings::MAX_FOOD_PORTION_G; editMin = 1; break;
+        case Field::WATER: editValue = c.waterPortionMl; editMax = Settings::MAX_WATER_PORTION_ML; editMin = 1; break;
         case Field::SLOT_ON: editValue = slot.enabled; editMax = 1; break;
         case Field::SLOT_HOUR: editValue = slot.hour; editMax = 23; break;
         case Field::SLOT_MINUTE: editValue = slot.minute; editMax = 59; break;
-        case Field::SLOT_FOOD: editValue = slot.foodG; break;
-        case Field::SLOT_WATER: editValue = slot.waterMl; break;
+        case Field::SLOT_FOOD: editValue = slot.foodG; editMax = Settings::MAX_FOOD_PORTION_G; break;
+        case Field::SLOT_WATER: editValue = slot.waterMl; editMax = Settings::MAX_WATER_PORTION_ML; break;
         case Field::ONE_DELAY: editValue = oneDelayMinutes; editMin = 1; editMax = 10080; editStep = 5; break;
-        case Field::ONE_FOOD: editValue = oneFoodG; break;
-        case Field::ONE_WATER: editValue = oneWaterMl; break;
+        case Field::ONE_FOOD: editValue = oneFoodG; editMax = Settings::MAX_FOOD_PORTION_G; break;
+        case Field::ONE_WATER: editValue = oneWaterMl; editMax = Settings::MAX_WATER_PORTION_ML; break;
         case Field::STEP_PERIOD: editValue = c.stepHalfPeriodUs; editMin = 200; editMax = 10000; editStep = 50; break;
         case Field::DIRECTION: editValue = c.stepperDirectionHigh; editMax = 1; break;
         case Field::JOG_STEPS: editValue = c.jogSteps; editMin = 1; editMax = 20000; editStep = 10; break;
@@ -309,8 +306,6 @@ namespace
         case Field::REVERSE_STEPS: editValue = c.reverseSteps; editMax = c.forwardSteps - 1; editStep = 5; break;
         case Field::PUMP_FACTOR: editValue = c.pumpMsPerMl; editMin = 10; editMax = 20000; editStep = 10; break;
         case Field::IR_LOW: editValue = c.foodPresentLow; editMax = 1; break;
-        case Field::TANK_PROTECTION: editValue = c.lowWaterProtection; editMax = 1; break;
-        case Field::TANK_MIN: editValue = c.minTankPercent; editMax = 50; break;
         case Field::FOOD_LIMIT: editValue = c.foodBowlMaxG; editMin = 10; editMax = 2000; editStep = 10; break;
         case Field::WATER_LIMIT: editValue = c.waterBowlMaxG; editMin = 10; editMax = 2000; editStep = 10; break;
         case Field::FEED_TIMEOUT: editValue = c.feedTimeoutMs / 1000; editMin = 5; editMax = 180; break;
@@ -350,8 +345,6 @@ namespace
         case Field::REVERSE_STEPS: c.reverseSteps = editValue; break;
         case Field::PUMP_FACTOR: c.pumpMsPerMl = editValue; break;
         case Field::IR_LOW: c.foodPresentLow = editValue != 0; break;
-        case Field::TANK_PROTECTION: c.lowWaterProtection = editValue != 0; break;
-        case Field::TANK_MIN: c.minTankPercent = editValue; break;
         case Field::FOOD_LIMIT: c.foodBowlMaxG = editValue; break;
         case Field::WATER_LIMIT: c.waterBowlMaxG = editValue; break;
         case Field::FEED_TIMEOUT: c.feedTimeoutMs = editValue * 1000; break;
@@ -444,7 +437,6 @@ namespace
         case Action::WATER_SCALE: scaleId = ScaleId::WATER; go(Page::SCALE); break;
         case Action::TARE: tareOnly = true; go(Page::CAL_EMPTY); break;
         case Action::SCALE_CAL: tareOnly = false; go(Page::CAL_EMPTY); break;
-        case Action::TANK_CAL: go(Page::TANK_EMPTY); break;
         case Action::CLOCK_SAVE:
             if (Clock::set(DateTime(clockYear, clockMonth, clockDay, clockHour, clockMinute, 0)))
                 showNotice("Дата и время записаны в RTC.", Page::CLOCK);
@@ -460,9 +452,9 @@ namespace
     void beginCapture(int stage)
     {
         captureStage = stage;
-        const bool success = stage >= 2 ? Sensors::captureTank() : Sensors::capture(scaleId);
+        const bool success = Sensors::capture(scaleId);
         if (success) go(Page::CAL_CAPTURE);
-        else showNotice("Нет данных датчика. Проверьте подключение и повторите.", stage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE);
+        else showNotice("Нет данных датчика. Проверьте подключение и повторите.", Page::SCALE);
     }
 
     void updateCapture()
@@ -472,7 +464,7 @@ namespace
         if (state == CaptureState::BUSY) return;
         if (state == CaptureState::FAILED) {
             Sensors::cancelCapture();
-            showNotice("Датчик не ответил вовремя. Настройки не изменены.", captureStage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE);
+            showNotice("Датчик не ответил вовремя. Настройки не изменены.", Page::SCALE);
             return;
         }
         if (state != CaptureState::DONE) return;
@@ -497,16 +489,6 @@ namespace
             }
             proposedFactor = static_cast<float>(delta) / knownMassG;
             go(Page::CAL_RESULT);
-        } else if (captureStage == 2) {
-            zeroRaw = raw;
-            go(Page::TANK_FULL);
-        } else {
-            if (std::abs(raw - zeroRaw) < 50 || span > 100) {
-                showNotice("Сигнал бака почти не изменился или нестабилен. Проверьте датчик.", Page::SENSOR_SETTINGS); return;
-            }
-            auto c = Config::get();
-            c.tankRawEmpty = zeroRaw; c.tankRawFull = raw; c.tankCalibrated = true;
-            if (save(c, Page::SENSOR_SETTINGS)) showNotice("Калибровка бака сохранена. Защиту без воды можно включить отдельно.", Page::SENSOR_SETTINGS);
         }
     }
 
@@ -540,8 +522,6 @@ namespace
         case Page::CAL_RESULT: return "Результат калибровки";
         case Page::PUMP_SECONDS: return "Время теста насоса";
         case Page::PUMP_VOLUME: return "Измеренный объём";
-        case Page::TANK_EMPTY: return "Калибровка: пустой бак";
-        case Page::TANK_FULL: return "Калибровка: полный бак";
         case Page::PROCESS: return FeedingController::info().state == MachineState::ERROR ? "Ошибка" : "Выполнение";
         }
         return "CYBER BOWL";
@@ -557,7 +537,7 @@ namespace
         if (page == Page::DIAGNOSTICS) return "BACK: меню";
         if (page == Page::CAMERA) return "UP/DN:страница  BACK:меню";
         if (page == Page::CAL_EMPTY || page == Page::CAL_LOAD || page == Page::CAL_RESULT ||
-            page == Page::TANK_EMPTY || page == Page::TANK_FULL || page == Page::CONFIRM)
+            page == Page::CONFIRM)
             return "OK: принять  BACK: отмена";
         return "UP/DN:выбор  OK:вход  BACK:назад";
     }
@@ -638,8 +618,7 @@ namespace
         if (s.water.valid) snprintf(right, sizeof(right), "%.1f г", s.water.grams);
         else snprintf(right, sizeof(right), "%s", s.water.connected ? "Калибровка" : "Нет данных");
         paintRow(2, "Миска воды", right);
-        if (s.tankValid) snprintf(right, sizeof(right), "Вода: %d%%", s.tankPercent);
-        else snprintf(right, sizeof(right), "Бак: не калибр.");
+        snprintf(right, sizeof(right), "%s", s.waterPresent ? "Вода в баке" : "Бак пуст");
         paintRow(3, s.foodAvailable ? "Корм в бункере" : "Бункер пуст", right, false, s.foodAvailable ? GREEN : ORANGE);
         paintRow(4, FeedingController::nextFeedingText(), "", false, ACCENT);
         paintRow(5, FeedingController::info().message, "", false, MUTED);
@@ -779,10 +758,6 @@ namespace
             snprintf(value, sizeof(value), "%.1f мл", measuredMl); paintRow(1, value, "", false, TEXT, 2);
             snprintf(value, sizeof(value), "Тест длился %lu с", static_cast<unsigned long>(pumpSeconds)); paintRow(2, value);
             paragraph("UP / DOWN: объём с шагом 0.5 мл.\nOK: сохранить расход\nBACK: отменить", 3); break;
-        case Page::TANK_EMPTY:
-            paragraph("Опустошите бак до рабочего нулевого уровня. Датчик должен быть на штатном месте.\nOK: измерить пустой бак\nBACK: отменить"); break;
-        case Page::TANK_FULL:
-            paragraph("Заполните бак до рабочего полного уровня.\nOK: измерить полный бак\nBACK: отменить"); break;
         default: break;
         }
     }
@@ -848,7 +823,7 @@ void Ui::handleButtons()
             previousRendered = Page::NOTICE;
             if (processReturn == Page::PUMP_VOLUME && FeedingController::info().lastSuccess) {
                 measuredMl = std::max(0.5f, std::min(1000.0f,
-                    std::round(pumpSeconds * 1000 / Config::get().pumpMsPerMl * 2) / 2));
+                    std::round(pumpSeconds * Settings::MS_PER_SECOND / Config::get().pumpMsPerMl * 2) / 2));
                 go(Page::PUMP_VOLUME); return;
             }
         }
@@ -879,7 +854,7 @@ void Ui::handleButtons()
         return;
     }
     if (page == Page::CAL_CAPTURE) {
-        if (back.pressed()) { Sensors::cancelCapture(); go(captureStage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE); }
+        if (back.pressed()) { Sensors::cancelCapture(); go(Page::SCALE); }
         return;
     }
     if (page == Page::CAL_MASS) {
@@ -900,16 +875,11 @@ void Ui::handleButtons()
         }
         return;
     }
-    if (page == Page::TANK_EMPTY || page == Page::TANK_FULL) {
-        if (back.pressed()) go(Page::SENSOR_SETTINGS);
-        else if (ok.pressed()) beginCapture(page == Page::TANK_EMPTY ? 2 : 3);
-        return;
-    }
     if (page == Page::PUMP_SECONDS) {
         if (back.pressed()) { go(Page::PUMP); return; }
-        if (up.repeated()) pumpSeconds = std::min(60u, pumpSeconds + 1);
-        if (down.repeated()) pumpSeconds = std::max(1u, pumpSeconds - 1);
-        if (ok.pressed()) { FeedingController::startPumpTest(pumpSeconds * 1000); startProcess(processReturn); }
+        if (up.repeated()) pumpSeconds = std::min(Settings::PUMP_TEST_MAX_MS / Settings::MS_PER_SECOND, pumpSeconds + 1);
+        if (down.repeated()) pumpSeconds = std::max(Settings::PUMP_TEST_MIN_MS / Settings::MS_PER_SECOND, pumpSeconds - 1);
+        if (ok.pressed()) { FeedingController::startPumpTest(pumpSeconds * Settings::MS_PER_SECOND); startProcess(processReturn); }
         return;
     }
     if (page == Page::PUMP_VOLUME) {
@@ -917,7 +887,7 @@ void Ui::handleButtons()
         if (up.repeated()) measuredMl = std::min(1000.0f, measuredMl + 0.5f);
         if (down.repeated()) measuredMl = std::max(0.5f, measuredMl - 0.5f);
         if (ok.pressed()) {
-            auto c = Config::get(); c.pumpMsPerMl = pumpSeconds * 1000.0f / measuredMl;
+            auto c = Config::get(); c.pumpMsPerMl = pumpSeconds * Settings::MS_PER_SECOND / measuredMl;
             if (save(c, Page::PUMP)) showNotice("Расход насоса сохранён.", Page::PUMP);
         }
         return;

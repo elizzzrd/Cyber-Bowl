@@ -6,9 +6,9 @@ namespace Clock
 {
     void begin();
     void update();
-    bool connected() const;
-    bool valid() const;
-    DateTime now() const;
+    bool connected();
+    bool valid();
+    DateTime now();
     bool set(const DateTime& date);
     bool retry();
 }
