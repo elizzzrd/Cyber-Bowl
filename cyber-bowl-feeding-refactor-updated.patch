@@ -1,0 +1,1721 @@
+diff --git a/cyber_bowl_camera/test/native/test_camera.cpp b/cyber_bowl_camera/test/native/test_camera.cpp
+index 5beb4a0..a413b3b 100644
+--- a/cyber_bowl_camera/test/native/test_camera.cpp
++++ b/cyber_bowl_camera/test/native/test_camera.cpp
+@@ -9,7 +9,7 @@
+ 
+ int checks = 0;
+ #define CHECK(condition) do { \
+-    ++checks;                 \ 
++    ++checks;                 \
+     if(!(condition)) {        \
+         std::fprintf(stderr,"Failed line %d: %s\n", __LINE__, #condition); \
+         std::exit(1); }       \
+diff --git a/firmware/include/auger.hpp b/firmware/include/auger.hpp
+index 6f56c8f..26da5ef 100644
+--- a/firmware/include/auger.hpp
++++ b/firmware/include/auger.hpp
+@@ -19,4 +19,6 @@ class Auger
+         bool isValidRequest(uint32_t halfPeriodUs, uint32_t timeoutMs) const;
+         void configureDriver(bool directionHigh);
+         void prepareCounters(uint32_t pulses, uint32_t halfPeriodUs, uint32_t timeoutMs);
+-};
+\ No newline at end of file
++};
++
++extern Auger auger;
+diff --git a/firmware/include/clock.hpp b/firmware/include/clock.hpp
+index bad6e97..cdc1c3b 100644
+--- a/firmware/include/clock.hpp
++++ b/firmware/include/clock.hpp
+@@ -6,9 +6,9 @@ namespace Clock
+ {
+     void begin();
+     void update();
+-    bool connected() const;
+-    bool valid() const;
+-    DateTime now() const;
++    bool connected();
++    bool valid();
++    DateTime now();
+     bool set(const DateTime& date);
+     bool retry();
+ }
+diff --git a/firmware/include/settings.hpp b/firmware/include/settings.hpp
+index 9c51764..f5d8abb 100644
+--- a/firmware/include/settings.hpp
++++ b/firmware/include/settings.hpp
+@@ -2,15 +2,12 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
+-#pragma once
+-#include <cstdint>
+ 
+ namespace Settings 
+ {
+     constexpr uint32_t BUTTON_DEBOUNCE_MS         = 30;
+     constexpr uint32_t RTC_INTERVAL_MS            = 1000;
+     constexpr uint32_t SENSOR_STALE_MS            = 2000;
+-    constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
+ 
+     constexpr uint8_t  CAPTURE_SAMPLES            = 10;
+     constexpr uint32_t CAPTURE_TIMEOUT_MS         = 3000;
+@@ -25,6 +22,26 @@ namespace Settings
+     constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
+     constexpr float    MIN_VALID_FACTOR           = 0.01f;
+ 
++    constexpr size_t SCHEDULE_COUNT = 4;
++    constexpr uint32_t DISPLAY_INTERVAL_MS = 100;
++    constexpr float MAX_FOOD_PORTION_G = 200.0f;
++    constexpr float MAX_WATER_PORTION_ML = 200.0f;
++    constexpr float SCALE_ZERO_TOLERANCE_G = 5.0f;
++    constexpr uint32_t HOPPER_EMPTY_TIMEOUT_MS = 2000;
++    constexpr float WATER_DELIVERY_MIN_FRACTION = 0.9f;
++    constexpr uint32_t US_PER_MS = 1000;
++    constexpr uint32_t MS_PER_SECOND = 1000;
++    constexpr uint32_t STEPPER_HALVES_PER_PULSE = 2;
++    constexpr uint32_t AUGER_TEST_MAX_MS = 15000;
++    constexpr uint32_t AUGER_TEST_TIMEOUT_MS = 16000;
++    constexpr uint32_t PUMP_TEST_MIN_MS = 1000;
++    constexpr uint32_t PUMP_TEST_MAX_MS = 60000;
++    constexpr uint32_t ONE_SHOT_WINDOW_SECONDS = 60;
++    constexpr uint32_t SECONDS_PER_DAY = 86400;
++    constexpr uint32_t DATE_KEY_YEAR_MULTIPLIER = 10000;
++    constexpr uint32_t DATE_KEY_MONTH_MULTIPLIER = 100;
++    constexpr size_t CONTROLLER_TEXT_CAPACITY = 112;
++
+     struct ScaleCalibration {
+         float factor = 0.0f;
+         int32_t offset = 0;
+@@ -67,10 +84,13 @@ namespace Settings
+         
+         uint8_t brightnessPercent = 100;
+         
++        bool stepperDirectionHigh = true;
++        bool invertDisplay = false;
+         bool foodPresentLow = true;
+         
+-        ScheduleSlot schedule[4];
++        ScheduleSlot schedule[SCHEDULE_COUNT];
+         OneShot oneShot;
++        uint32_t lastRunDay[SCHEDULE_COUNT] = {};
+     };
+ 
+     Data defaults();
+diff --git a/firmware/src/auger.cpp b/firmware/src/auger.cpp
+index 78b1d68..2799747 100644
+--- a/firmware/src/auger.cpp
++++ b/firmware/src/auger.cpp
+@@ -38,7 +38,7 @@ namespace
+ 
+     volatile bool     active            = false;  
+     volatile bool     stepLevelHigh     = false;  // current STEP pin level
+-    volatile bool     timedOut          = false;  // has the timeout fired
++    volatile bool     timeoutReached     = false;  // has the timeout fired
+     volatile uint32_t stepsCompleted    = 0;      
+     volatile uint32_t stepsRequested    = 0;      // steps needed (0 = unlimited)
+     volatile uint32_t ticksElapsed      = 0;      // timer ticks elapsed
+@@ -56,8 +56,8 @@ namespace
+ 
+     struct CriticalSectionISR
+     {
+-        CriticalSectionISR()  { portENTER_CRITICAL_ISR(&mux); }
+-        ~CriticalSectionISR() { portEXIT_CRITICAL_ISR(&mux); }
++        __attribute__((always_inline)) CriticalSectionISR()  { portENTER_CRITICAL_ISR(&mux); }
++        __attribute__((always_inline)) ~CriticalSectionISR() { portEXIT_CRITICAL_ISR(&mux); }
+         CriticalSectionISR(const CriticalSectionISR&)            = delete;
+         CriticalSectionISR& operator=(const CriticalSectionISR&) = delete;
+     };
+@@ -101,7 +101,7 @@ namespace
+         if (!active) return;
+ 
+         if (++ticksElapsed >= ticksUntilTimeout) {
+-            timedOut = true;
++            timeoutReached = true;
+             haltOutput();
+         } else {
+             emitStepEdge();
+@@ -160,6 +160,8 @@ namespace
+ // ------------------------------------------------------------------------------------
+ 
+ 
++Auger auger;
++
+ bool Auger::begin()
+ {
+     initPins();
+@@ -207,7 +209,7 @@ bool Auger::running()
+ bool Auger::timedOut()
+ {
+     CriticalSection lock;
+-    return timedOut;
++    return timeoutReached;
+ }
+ 
+ 
+@@ -248,7 +250,7 @@ void Auger::prepareCounters(uint32_t pulses, uint32_t halfPeriodUs, uint32_t tim
+     ticksUntilTimeout = static_cast<uint32_t>(
+         static_cast<uint64_t>(timeoutMs) * 1000u / halfPeriodUs);
+ 
+-    timedOut      = false;
++    timeoutReached = false;
+     stepLevelHigh = false;
+     active        = true;
+ }
+\ No newline at end of file
+diff --git a/firmware/src/clock.cpp b/firmware/src/clock.cpp
+index 2a39863..cd53631 100644
+--- a/firmware/src/clock.cpp
++++ b/firmware/src/clock.cpp
+@@ -7,6 +7,7 @@
+ 
+ namespace 
+ {
++    constexpr uint8_t DS3231_ADDRESS = 0x68;
+     RTC_DS3231 rtc;
+     DateTime cached(2026, 1, 1, 0, 0, 0);
+     bool available = false;
+@@ -62,9 +63,9 @@ void Clock::update()
+ }
+ 
+ 
+-bool Clock::connected() const    { return available; }
+-bool Clock::valid()     const    { return available && timeValid; }
+-DateTime Clock::now()   const    { return cached; }
++bool Clock::connected()    { return available; }
++bool Clock::valid()        { return available && timeValid; }
++DateTime Clock::now()      { return cached; }
+ 
+ 
+ bool Clock::set(const DateTime& date)
+@@ -72,7 +73,7 @@ bool Clock::set(const DateTime& date)
+     if (!available || !validDate(date)) 
+         return false;
+     
+-        rtc.adjust(date);
++    rtc.adjust(date);
+     cached = rtc.now();
+     timeValid = validDate(cached) && cached.unixtime() == date.unixtime();
+     lastMs = millis();
+diff --git a/firmware/src/feeding_controller.cpp b/firmware/src/feeding_controller.cpp
+index cdd9273..37a950b 100644
+--- a/firmware/src/feeding_controller.cpp
++++ b/firmware/src/feeding_controller.cpp
+@@ -8,14 +8,13 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+-#include <cstring>
+ 
+-namespace 
++namespace
+ {
+     ProcessInfo process;
+ 
+-    char message[112] = "Готово";
+-    char nextText[112] = "Расписание выключено";
++    char message[Settings::CONTROLLER_TEXT_CAPACITY] = "Готово";
++    char nextText[Settings::CONTROLLER_TEXT_CAPACITY] = "Расписание выключено";
+ 
+     float waterAfterFood = 0;
+     float waterStartG = 0;
+@@ -40,23 +39,23 @@ namespace
+ 
+     void fail(const char* text)
+     {
+-        Pump::off(); 
+-        Auger::stop();
+-        
++        Pump::off();
++        auger.stop();
++
+         waterAfterFood = 0;
+         process.state = MachineState::ERROR;
+         process.lastSuccess = false;
+-        
++
+         setMessage(text);
+     }
+ 
+     void finish(const char* text, bool success = true)
+     {
+-        Pump::off(); 
+-        Auger::stop();
+-        
++        Pump::off();
++        auger.stop();
++
+         process.state = MachineState::IDLE;
+-        
++
+         process.lastSuccess = success;
+         setMessage(text);
+     }
+@@ -64,24 +63,24 @@ namespace
+     bool checkFood(float amount)
+     {
+         const auto& s = Sensors::readings();
+-        
++
+         if (!s.food.valid) {
+-            fail("Откалибруйте весы корма"); 
+-            return false; 
++            fail("Откалибруйте весы корма");
++            return false;
+         }
+ 
+-        if (s.food.grams < -5) { 
+-            fail("Проверьте ноль весов корма"); 
+-            return false; 
++        if (s.food.grams < -Settings::SCALE_ZERO_TOLERANCE_G) {
++            fail("Проверьте ноль весов корма");
++            return false;
+         }
+ 
+-        if (!s.foodAvailable) { 
+-            fail("В бункере нет корма"); 
+-            return false; 
++        if (!s.foodAvailable) {
++            fail("В бункере нет корма");
++            return false;
+         }
+-        
++
+         if (std::max(0.0f, s.food.grams) + amount > Config::get().foodBowlMaxG) {
+-            fail("Превышен лимит миски корма"); 
++            fail("Превышен лимит миски корма");
+             return false;
+         }
+ 
+@@ -90,11 +89,8 @@ namespace
+ 
+     bool checkTank()
+     {
+-        if (Config::get().lowWaterProtection &&
+-            (!Sensors::readings().tankValid || 
+-            Sensors::readings().tankPercent <= Config::get().minTankPercent)) 
+-        {
+-            fail("В баке недостаточно воды"); 
++        if (!Sensors::readings().waterPresent) {
++            fail("В баке недостаточно воды");
+             return false;
+         }
+ 
+@@ -105,23 +101,23 @@ namespace
+     {
+         const auto& s = Sensors::readings();
+ 
+-        if (!s.water.valid) { 
+-            fail("Откалибруйте весы воды"); 
+-            return false; 
++        if (!s.water.valid) {
++            fail("Откалибруйте весы воды");
++            return false;
+         }
+ 
+-        if (s.water.grams < -5) { 
+-            fail("Проверьте ноль весов воды"); 
+-            return false; 
++        if (s.water.grams < -Settings::SCALE_ZERO_TOLERANCE_G) {
++            fail("Проверьте ноль весов воды");
++            return false;
+         }
+ 
+         if (std::max(0.0f, s.water.grams) + amount > Config::get().waterBowlMaxG) {
+-            fail("Превышен лимит миски воды"); 
++            fail("Превышен лимит миски воды");
+             return false;
+         }
+ 
+         if (amount * Config::get().pumpMsPerMl > Config::get().waterTimeoutMs) {
+-            fail("Порция воды больше лимита времени"); 
++            fail("Порция воды больше лимита времени");
+             return false;
+         }
+ 
+@@ -131,12 +127,12 @@ namespace
+     void beginWater(float amount)
+     {
+         waterStartG = Sensors::readings().water.grams;
+-    
++
+         process.requestedWaterMl = amount;
+         process.durationMs = static_cast<uint32_t>(std::ceil(amount * Config::get().pumpMsPerMl));
+         process.startedMs = millis();
+         process.state = MachineState::WATERING;
+-    
++
+         setMessage("Подача воды");
+         Pump::on();
+     }
+@@ -145,61 +141,222 @@ namespace
+     {
+         const auto& c = Config::get();
+         const uint32_t elapsed = millis() - process.startedMs;
+-    
+-        if (elapsed >= c.feedTimeoutMs) 
++
++        if (elapsed >= c.feedTimeoutMs)
+             return false;
+-        
+-        return Auger::run(reverseSegment ? !c.stepperDirectionHigh : c.stepperDirectionHigh,
+-                          c.stepHalfPeriodUs, c.reverseSteps == 0 ? 0 :
+-                          (reverseSegment ? c.reverseSteps : c.forwardSteps),
+-                          c.feedTimeoutMs - elapsed);
++
++        const bool direction = reverseSegment ? !c.stepperDirectionHigh : c.stepperDirectionHigh;
++        uint32_t pulses = 0;
++        if (c.reverseSteps != 0)
++            pulses = reverseSegment ? c.reverseSteps : c.forwardSteps;
++
++        return auger.run(direction, c.stepHalfPeriodUs, pulses, c.feedTimeoutMs - elapsed);
++    }
++
++    void updateFeeding(const Settings::Data& c, const SensorReadings& s, uint32_t elapsed)
++    {
++        process.completedSteps = finishedSegmentSteps + auger.steps();
++
++        if (!s.food.valid)
++        {
++            fail("Потеряны показания весов корма");
++            return;
++        }
++
++        if (s.food.grams >= process.foodTargetG)
++        {
++            auger.stop();
++            const float amount = waterAfterFood;
++            waterAfterFood = 0;
++
++            if (amount > 0) {
++                if (checkWater(amount)) beginWater(amount);
++            } else
++                finish("Корм выдан");
++
++            return;
++        }
++
++        if (!s.foodAvailable)
++        {
++            if (!hopperEmpty) {
++                hopperEmpty = true;
++                hopperEmptyMs = millis();
++            }
++
++            if (millis() - hopperEmptyMs >= Settings::HOPPER_EMPTY_TIMEOUT_MS) {
++                fail("Корм закончился");
++                return;
++            }
++        }
++        else
++            hopperEmpty = false;
++
++        if (elapsed >= c.feedTimeoutMs || auger.timedOut()) {
++            fail("Время подачи корма истекло");
++            return;
++        }
++
++        if (!auger.running()) {
++            if (c.reverseSteps == 0) {
++                fail("Двигатель остановился");
++                return;
++            }
++
++            finishedSegmentSteps += auger.steps();
++            reverseSegment = !reverseSegment;
++
++            if (!startSegment())
++                fail("Не удалось продолжить подачу");
++        }
++    }
++
++    void updateWatering(const Settings::Data& c, const SensorReadings& s, uint32_t elapsed)
++    {
++        if (!s.water.valid) {
++            fail("Потеряны показания весов воды");
++            return;
++        }
++
++        if (!checkTank())
++            return;
++
++        if (s.water.grams >= c.waterBowlMaxG) {
++            finish("Миска воды заполнена");
++            return;
++        }
++
++        if (s.water.grams - waterStartG >= process.requestedWaterMl) {
++            finish("Вода выдана");
++            return;
++        }
++
++        // Time is a safety limit. Insufficient measured water is reported as a fault.
++        if (elapsed >= process.durationMs || elapsed >= c.waterTimeoutMs) {
++            const float delivered = s.water.grams - waterStartG;
++            if (delivered >= process.requestedWaterMl * Settings::WATER_DELIVERY_MIN_FRACTION)
++                finish("Вода выдана");
++            else
++                fail("Мало воды: проверьте насос");
++        }
++    }
++
++    void updateAugerTest()
++    {
++        process.completedSteps = auger.steps();
++
++        if (auger.timedOut())
++            fail("Тест двигателя: таймаут");
++        else if (!auger.running())
++            finish("Тест двигателя завершён");
++    }
++
++    void updatePumpTest(const Settings::Data& c, const SensorReadings& s, uint32_t elapsed)
++    {
++        if (!checkTank())
++            return;
++
++        if (s.water.valid && s.water.grams >= c.waterBowlMaxG) {
++            fail("Тест: миска воды заполнена");
++            return;
++        }
++
++        if (elapsed >= process.durationMs)
++            finish("Тест насоса завершён");
+     }
+ 
+     uint32_t dayKey(const DateTime& date)
+     {
+-        return date.year() * 10000u + date.month() * 100u + date.day();
++        return date.year() * Settings::DATE_KEY_YEAR_MULTIPLIER +
++               date.month() * Settings::DATE_KEY_MONTH_MULTIPLIER + date.day();
++    }
++
++    struct ScheduleEvent {
++        bool changed = false;
++        bool due = false;
++        bool collision = false;
++        float food = 0;
++        float water = 0;
++    };
++
++    ScheduleEvent collectScheduleEvent(Settings::Data& candidate, const DateTime& date)
++    {
++        ScheduleEvent event;
++        const uint32_t epoch = date.unixtime();
++        const uint32_t today = dayKey(date);
++
++        if (candidate.oneShot.enabled && epoch >= candidate.oneShot.dueEpoch) {
++            candidate.oneShot.enabled = false;
++            event.changed = true;
++            if (epoch - candidate.oneShot.dueEpoch < Settings::ONE_SHOT_WINDOW_SECONDS) {
++                event.due = true;
++                event.food = candidate.oneShot.foodG;
++                event.water = candidate.oneShot.waterMl;
++            }
++            else
++                Serial.println("One-shot expired: no catch-up dispensing");
++        }
++        for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i) {
++            const auto& slot = candidate.schedule[i];
++
++            if (!slot.enabled || slot.hour != date.hour() ||
++                slot.minute != date.minute() ||
++                candidate.lastRunDay[i] == today)
++                continue;
++
++            candidate.lastRunDay[i] = today;
++            event.changed = true;
++            if (event.due)
++                event.collision = true;
++            else {
++                event.due = true;
++                event.food = slot.foodG;
++                event.water = slot.waterMl;
++            }
++        }
++        return event;
+     }
+ 
+     void buildNextText()
+     {
+-        if (!Clock::valid()) { 
+-            snprintf(nextText, sizeof(nextText), "Настройте часы RTC"); 
+-            return; 
++        if (!Clock::valid()) {
++            snprintf(nextText, sizeof(nextText), "Настройте часы RTC");
++            return;
+         }
+-        
+-        const uint32_t epoch = Clock::now().unixtime();
+-        
++
++        const auto date = Clock::now();
++        const uint32_t epoch = date.unixtime();
++
+         uint32_t earliest = UINT32_MAX;
+         float grams = 0;
+         float water = 0;
+-        
++
+         const auto& c = Config::get();
+         if (c.oneShot.enabled && c.oneShot.dueEpoch >= epoch) {
+-            earliest = c.oneShot.dueEpoch; 
+-            grams = c.oneShot.foodG; 
++            earliest = c.oneShot.dueEpoch;
++            grams = c.oneShot.foodG;
+             water = c.oneShot.waterMl;
+         }
+ 
+         for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i) {
+             const auto& slot = c.schedule[i];
+-        
+-            if (!slot.enabled) 
++
++            if (!slot.enabled)
+                 continue;
+-            
+-            const auto date = Clock::now();
++
+             DateTime due(date.year(), date.month(), date.day(), slot.hour, slot.minute, 0);
+             uint32_t when = due.unixtime();
+-        
+-            if (when < epoch || c.lastRunDay[i] == dayKey(date)) 
+-                when += 86400;
+-            if (when < earliest) { 
+-                earliest = when; 
+-                grams = slot.foodG; 
+-                water = slot.waterMl; 
++
++            if (when < epoch || c.lastRunDay[i] == dayKey(date))
++                when += Settings::SECONDS_PER_DAY;
++            if (when < earliest) {
++                earliest = when;
++                grams = slot.foodG;
++                water = slot.waterMl;
+             }
+         }
+ 
+-        if (earliest == UINT32_MAX) 
++        if (earliest == UINT32_MAX)
+             snprintf(nextText, sizeof(nextText), "Расписание выключено");
+         else {
+             DateTime due(earliest);
+@@ -225,75 +382,78 @@ const char* FeedingController::nextFeedingText() { return nextText; }
+ 
+ bool FeedingController::startCycle(float foodG, float waterMl)
+ {
+-    if (process.state != MachineState::IDLE) 
++    if (process.state != MachineState::IDLE)
+         return false;
+-    
+-    if (!std::isfinite(foodG)        ||  !std::isfinite(waterMl)      || 
+-        foodG < 0 || foodG > 200     ||  waterMl < 0 || waterMl > 200 || 
+-        (foodG == 0 && waterMl == 0)) 
+-    {
+-        fail("Неверная порция"); 
++
++    if (!std::isfinite(foodG) || !std::isfinite(waterMl) ||
++        foodG < 0 || foodG > Settings::MAX_FOOD_PORTION_G ||
++        waterMl < 0 || waterMl > Settings::MAX_WATER_PORTION_ML ||
++        (foodG == 0 && waterMl == 0)) {
++        fail("Неверная порция");
+         return false;
+     }
+ 
+-    if (foodG > 0 && !checkFood(foodG)) 
++    if (foodG > 0 && !checkFood(foodG))
+         return false;
+-    
+-    if (waterMl > 0 && !checkWater(waterMl)) 
++
++    if (waterMl > 0 && !checkWater(waterMl))
+         return false;
+-    
++
+     process.lastSuccess = false;
+     process.completedSteps = 0;
+     waterAfterFood = waterMl;
+ 
+-    if (foodG == 0) { 
+-        waterAfterFood = 0; 
+-        beginWater(waterMl); 
+-        return true; 
++    if (foodG == 0) {
++        waterAfterFood = 0;
++        beginWater(waterMl);
++        return true;
+     }
+-    
++
+     process.foodTargetG = Sensors::readings().food.grams + foodG;
+     process.startedMs = millis();
+     process.durationMs = Config::get().feedTimeoutMs;
+-    
++
+     hopperEmpty = false;
+     reverseSegment = false;
+     finishedSegmentSteps = 0;
+-    
+-    if (!startSegment()) { 
+-        fail("Таймер двигателя недоступен"); 
+-        return false; 
++
++    if (!startSegment()) {
++        fail("Таймер двигателя недоступен");
++        return false;
+     }
+-    
++
+     process.state = MachineState::FEEDING;
+     setMessage("Подача корма");
+-    
++
+     return true;
+ }
+ 
+ bool FeedingController::startAugerTest()
+ {
+-    if (process.state != MachineState::IDLE) 
++    if (process.state != MachineState::IDLE)
+         return false;
+-    
++
+     const auto& c = Config::get();
+-    const uint64_t duration = static_cast<uint64_t>(c.jogSteps) * 2 * c.stepHalfPeriodUs;
++    const uint64_t duration = static_cast<uint64_t>(c.jogSteps) * Settings::STEPPER_HALVES_PER_PULSE * c.stepHalfPeriodUs;
+ 
+-    if (duration > 15000000) { 
+-        fail("Тест двигателя должен быть до 15 с"); 
+-        return false; 
++    if (duration > static_cast<uint64_t>(Settings::AUGER_TEST_MAX_MS) * Settings::US_PER_MS) {
++        char text[Settings::CONTROLLER_TEXT_CAPACITY];
++        snprintf(text, sizeof(text), "Тест двигателя должен быть до %lu с",
++                 static_cast<unsigned long>(Settings::AUGER_TEST_MAX_MS / Settings::MS_PER_SECOND));
++        fail(text);
++        return false;
+     }
+ 
+-    if (!Auger::run(c.stepperDirectionHigh, c.stepHalfPeriodUs, c.jogSteps, 16000)) {
+-        fail("Не удалось запустить двигатель"); 
++    if (!auger.run(c.stepperDirectionHigh, c.stepHalfPeriodUs, c.jogSteps, Settings::AUGER_TEST_TIMEOUT_MS)) {
++        fail("Не удалось запустить двигатель");
+         return false;
+     }
+ 
+     process.state = MachineState::AUGER_TEST;
+     process.startedMs = millis();
+-    process.durationMs = static_cast<uint32_t>(duration / 1000);
++    process.durationMs = static_cast<uint32_t>(duration / Settings::US_PER_MS);
+     process.lastSuccess = false;
+-    
++
+     setMessage("Тест двигателя");
+     return true;
+ }
+@@ -301,12 +461,12 @@ bool FeedingController::startAugerTest()
+ 
+ bool FeedingController::startPumpTest(uint32_t durationMs)
+ {
+-    if (process.state != MachineState::IDLE) 
++    if (process.state != MachineState::IDLE)
+         return false;
+-    
+-    if (durationMs < 1000 || durationMs > 60000 || !checkTank()) 
++
++    if (durationMs < Settings::PUMP_TEST_MIN_MS || durationMs > Settings::PUMP_TEST_MAX_MS || !checkTank())
+         return false;
+-    
++
+     if (Sensors::readings().water.valid && Sensors::readings().water.grams >= Config::get().waterBowlMaxG) {
+         fail("Миска воды заполнена"); return false;
+     }
+@@ -315,7 +475,7 @@ bool FeedingController::startPumpTest(uint32_t durationMs)
+     process.startedMs = millis();
+     process.durationMs = durationMs;
+     process.lastSuccess = false;
+-    
++
+     setMessage("Тест насоса");
+     Pump::on();
+     return true;
+@@ -336,119 +496,29 @@ void FeedingController::acknowledge()
+ 
+ void FeedingController::update()
+ {
+-    const auto& c = Config::get();
+-    const auto& s = Sensors::readings();
++    const auto& config = Config::get();
++    const auto& readings = Sensors::readings();
+     const uint32_t elapsed = millis() - process.startedMs;
+-    
+-    if (process.state == MachineState::FEEDING) 
+-    {
+-        process.completedSteps = finishedSegmentSteps + Auger::steps();
+-        
+-        if (!s.food.valid) 
+-        { 
+-            fail("Потеряны показания весов корма"); 
+-            return; 
+-        }
+-
+-        if (s.food.grams >= process.foodTargetG) 
+-        {
+-            Auger::stop();
+-            const float amount = waterAfterFood;
+-            waterAfterFood = 0;
+-        
+-            if (amount > 0) {
+-                if (checkWater(amount)) beginWater(amount);
+-            } else 
+-                finish("Корм выдан");
+-            
+-            return;
+-        }
+-
+-        if (!s.foodAvailable) 
+-        {
+-            if (!hopperEmpty) { 
+-                hopperEmpty = true; 
+-                hopperEmptyMs = millis(); 
+-            }
+-
+-            if (millis() - hopperEmptyMs >= 2000) { 
+-                fail("Корм закончился"); 
+-                return; 
+-            }
+-        } 
+-        else 
+-            hopperEmpty = false;
+-        
+-        if (elapsed >= c.feedTimeoutMs || Auger::timedOut()) { 
+-            fail("Время подачи корма истекло"); 
+-            return; 
+-        }
+-
+-        if (!Auger::running()) {
+-            if (c.reverseSteps == 0) { 
+-                fail("Двигатель остановился"); 
+-                return; 
+-            }
+ 
+-            finishedSegmentSteps += Auger::steps();
+-            reverseSegment = !reverseSegment;
+-            
+-            if (!startSegment()) 
+-                fail("Не удалось продолжить подачу");
+-        }
+-    } 
+-    else if (process.state == MachineState::WATERING) 
+-    {
+-        if (!s.water.valid) { 
+-            fail("Потеряны показания весов воды"); 
+-            return; 
+-        }
+-
+-        if (!checkTank()) 
+-            return;
+-
+-        if (s.water.grams >= c.waterBowlMaxG) { 
+-            finish("Миска воды заполнена"); 
+-            return; 
+-        }
+-
+-        if (s.water.grams - waterStartG >= process.requestedWaterMl) { 
+-            finish("Вода выдана"); 
+-            return; 
+-        }
+-
+-        // Time is a safety limit. Insufficient measured water is reported as a fault.
+-        if (elapsed >= process.durationMs || elapsed >= c.waterTimeoutMs) {
+-            const float delivered = s.water.grams - waterStartG;
+-            if (delivered >= process.requestedWaterMl * 0.9f) 
+-                finish("Вода выдана");
+-            else 
+-                fail("Мало воды: проверьте насос");
+-        }
+-    } 
+-    else if (process.state == MachineState::AUGER_TEST) {
+-        process.completedSteps = Auger::steps();
+-        
+-        if (Auger::timedOut()) 
+-            fail("Тест двигателя: таймаут");
+-        else if (!Auger::running()) 
+-            finish("Тест двигателя завершён");
+-    } 
+-    else if (process.state == MachineState::PUMP_TEST) {
+-        if (!checkTank()) 
+-            return;
+-        
+-            if (s.water.valid && s.water.grams >= c.waterBowlMaxG) { 
+-            fail("Тест: миска воды заполнена"); 
+-            return; 
+-        }
+-
+-        if (elapsed >= process.durationMs) 
+-            finish("Тест насоса завершён");
++    switch (process.state) {
++    case MachineState::FEEDING:
++        updateFeeding(config, readings, elapsed);
++        break;
++    case MachineState::WATERING:
++        updateWatering(config, readings, elapsed);
++        break;
++    case MachineState::AUGER_TEST:
++        updateAugerTest();
++        break;
++    case MachineState::PUMP_TEST:
++        updatePumpTest(config, readings, elapsed);
++        break;
++    case MachineState::IDLE:
++    case MachineState::ERROR:
++        break;
+     }
+ }
+ 
+-
+ void FeedingController::updateSchedule(bool serviceMode)
+ {
+     if (pendingSave && !busy()) {
+@@ -461,78 +531,45 @@ void FeedingController::updateSchedule(bool serviceMode)
+     }
+ 
+     buildNextText();
+-    if (!Clock::valid()) 
++    if (!Clock::valid())
+         return;
+     const auto date = Clock::now();
+     const uint32_t epoch = date.unixtime();
+-    
++
+     if (scheduleSeen && epoch == lastScheduleEpoch) return;
+     scheduleSeen = true;
+     lastScheduleEpoch = epoch;
+     // Mark every due event before any motor starts, so a reset cannot duplicate a meal.
+-    
++
+     auto candidate = pendingSave ? pendingConfig : Config::get();
+-    bool changed = false;
+-    bool due = false;
+-    bool collision = false;
+-    float food = 0, water = 0;
+-    
+-    if (candidate.oneShot.enabled && epoch >= candidate.oneShot.dueEpoch) {
+-        candidate.oneShot.enabled = false;
+-        changed = true;
+-        if (epoch - candidate.oneShot.dueEpoch < 60) {
+-            due = true; 
+-            food = candidate.oneShot.foodG; 
+-            water = candidate.oneShot.waterMl;
+-        } 
+-        else 
+-            Serial.println("One-shot expired: no catch-up dispensing");
+-    }
+-    for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i) {
+-        const auto& slot = candidate.schedule[i];
+-        
+-        if (!slot.enabled || slot.hour != date.hour() || 
+-            slot.minute != date.minute() ||
+-            candidate.lastRunDay[i] == dayKey(date)) 
+-            { continue; }
+-
+-        candidate.lastRunDay[i] = dayKey(date);
+-        changed = true;
+-        if (due) 
+-            collision = true;
+-        else { 
+-            due = true; 
+-            food = slot.foodG; 
+-            water = slot.waterMl; 
+-        }
+-    }
++    const auto event = collectScheduleEvent(candidate, date);
+ 
+-    if (!changed) 
++    if (!event.changed)
+         return;
+-    
+-        // Events during a manual/automatic run are consumed but do not queue another meal.
++
++    // Events during a manual/automatic run are consumed but do not queue another meal.
+     if (busy()) {
+         pendingConfig = candidate;
+         pendingSave = true;
+         Serial.println("Scheduled event skipped: busy");
+         return;
+     }
+-    
++
+     if (!Config::commit(candidate)) {
+-        if (!busy()) fail("Не удалось сохранить событие таймера");
++        fail("Не удалось сохранить событие таймера");
+         return;
+     }
+-    
+-    if (!due)
++
++    if (!event.due)
+         return;
+-    
++
+     if (serviceMode || process.state != MachineState::IDLE) {
+         Serial.println("Scheduled event skipped: busy/service/error");
+         return;
+     }
+ 
+-    if (collision) 
++    if (event.collision)
+         Serial.println("Coincident timers: only the first event is executed");
+-    
+-    startCycle(food, water);
++
++    startCycle(event.food, event.water);
+ }
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index a0d0d5b..8550f66 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -11,7 +11,7 @@ void setup()
+ {
+     // Outputs off first; NVS, I2C and the display initialize afterwards.
+     Pump::begin();
+-    const bool motorReady = Auger::begin();
++    const bool motorReady = auger.begin();
+     Serial.begin(115200);
+     Config::begin();
+     Sensors::begin();
+diff --git a/firmware/src/sensors.cpp b/firmware/src/sensors.cpp
+index f6164ce..43bcabe 100644
+--- a/firmware/src/sensors.cpp
++++ b/firmware/src/sensors.cpp
+@@ -22,7 +22,7 @@ namespace
+     bool foodEverSampled = false;
+     bool waterEverSampled = false;
+ 
+-    CaptureState captureState = CaptureState::IDLE;
++    CaptureState captureStatus = CaptureState::IDLE;
+     ScaleId captureTarget = ScaleId::FOOD;
+     bool isCapturingTank = false;
+     
+@@ -46,7 +46,7 @@ namespace
+ 
+     float getFactor(ScaleId id, const Settings::ScaleCalibration& c)
+     {
+-        if (c.factor > Settings::MIN_VALID_FACTOR) {
++        if (std::isfinite(c.factor) && std::fabs(c.factor) >= Settings::MIN_VALID_FACTOR) {
+             return c.factor;
+         }
+         return (id == ScaleId::FOOD) ? Settings::DEFAULT_FOOD_SCALE_FACTOR 
+@@ -61,18 +61,18 @@ namespace
+ 
+         if (++captureSamplesCount == Settings::CAPTURE_SAMPLES) {
+             captureResult = static_cast<int32_t>(captureSum / captureSamplesCount);
+-            captureState = CaptureState::DONE;
++            captureStatus = CaptureState::DONE;
+         }
+     }
+ 
+     bool isCapturingThisScale(ScaleId id)
+     {
+-        return captureState == CaptureState::BUSY && !isCapturingTank && id == captureTarget;
++        return captureStatus == CaptureState::BUSY && !isCapturingTank && id == captureTarget;
+     }
+ 
+     bool isCapturingTankNow()
+     {
+-        return captureState == CaptureState::BUSY && isCapturingTank;
++        return captureStatus == CaptureState::BUSY && isCapturingTank;
+     }
+ 
+     void recalculateScale(ScaleId id, ScaleReading& value, const Settings::ScaleCalibration& c)
+@@ -125,10 +125,10 @@ namespace
+ 
+     bool startCapture(bool forTank)
+     {
+-        if (captureState == CaptureState::BUSY) 
++        if (captureStatus == CaptureState::BUSY)
+             return false;
+ 
+-        captureState = CaptureState::BUSY;
++        captureStatus = CaptureState::BUSY;
+         isCapturingTank = forTank;
+         captureStartedMs = millis();
+         captureSamplesCount = 0;
+@@ -163,8 +163,8 @@ void Sensors::update()
+     pollScale(food, data.food, foodEverSampled, ScaleId::FOOD, now);
+     pollScale(water, data.water, waterEverSampled, ScaleId::WATER, now);
+ 
+-    if (captureState == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS) {
+-        captureState = CaptureState::FAILED;
++    if (captureStatus == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS) {
++        captureStatus = CaptureState::FAILED;
+     }
+     
+     pollSlowSensors(now);
+@@ -187,11 +187,11 @@ bool Sensors::captureTank()
+     return startCapture(true);
+ }
+ 
+-void Sensors::cancelCapture()           { captureState = CaptureState::IDLE; }
+-CaptureState Sensors::captureState()    { return captureState; }
++void Sensors::cancelCapture()           { captureStatus = CaptureState::IDLE; }
++CaptureState Sensors::captureState()    { return captureStatus; }
+ uint8_t Sensors::captureProgress()      { return captureSamplesCount; }
+ int32_t Sensors::capturedRaw()          { return captureResult; }
+-int32_t Sensors::capturedSpan()         { return captureMax - captureMin; }
++int32_t Sensors::capturedSpan()         { return captureSamplesCount ? captureMax - captureMin : 0; }
+ 
+ void Sensors::applySettings()
+ {
+diff --git a/firmware/src/settings.cpp b/firmware/src/settings.cpp
+index 0934d25..b8e712d 100644
+--- a/firmware/src/settings.cpp
++++ b/firmware/src/settings.cpp
+@@ -12,13 +12,13 @@ namespace
+ 
+     bool validScale(const Settings::ScaleCalibration& c)
+     {
+-        return std::isfinite(c.factor) && std::fabs(c.factor) >= 0.01f &&
++        return std::isfinite(c.factor) && std::fabs(c.factor) >= Settings::MIN_VALID_FACTOR &&
+                std::fabs(c.factor) <= 1000000.0f && (!c.calibrated || c.tared);
+     }
+ 
+     bool validPortions(float food, float water)
+     {
+-        return inRange(food, 0, 200) && inRange(water, 0, 200);
++        return inRange(food, 0, Settings::MAX_FOOD_PORTION_G) && inRange(water, 0, Settings::MAX_WATER_PORTION_ML);
+     }
+ 
+  
+@@ -29,8 +29,8 @@ namespace
+ 
+     bool validLimits(const Settings::Data& d)
+     {
+-        return inRange(d.foodPortionG, 1, 200)                     && 
+-               inRange(d.waterPortionMl, 1, 200)                   &&
++        return inRange(d.foodPortionG, 1, Settings::MAX_FOOD_PORTION_G)                     &&
++               inRange(d.waterPortionMl, 1, Settings::MAX_WATER_PORTION_ML)                   &&
+                inRange(d.foodBowlMaxG, 10, 2000)                   && 
+                inRange(d.waterBowlMaxG, 10, 2000)                  &&
+                inRange(d.pumpMsPerMl, 10, 20000)                   &&
+@@ -81,6 +81,7 @@ Settings::Data Settings::defaults()
+     d.waterScale.calibrated = true;
+     d.waterScale.tared = true;
+ 
++    d.schedule[0].hour = 8;
+     d.schedule[1].hour = 20;
+     d.schedule[2].hour = 12;
+     d.schedule[3].hour = 16;
+diff --git a/firmware/src/ui.cpp b/firmware/src/ui.cpp
+index 116b130..9c1c0d1 100644
+--- a/firmware/src/ui.cpp
++++ b/firmware/src/ui.cpp
+@@ -40,20 +40,20 @@ namespace
+         HOME, MAIN, MANUAL, SCHEDULE, SLOT, ONE_SHOT, SERVICE, AUGER, PUMP,
+         SCALES, SCALE, SENSOR_SETTINGS, LIMITS, DISPLAY_SETTINGS, CLOCK, DIAGNOSTICS,
+         EDIT, NOTICE, CONFIRM, CAL_EMPTY, CAL_CAPTURE, CAL_MASS, CAL_LOAD,
+-        CAL_RESULT, PUMP_SECONDS, PUMP_VOLUME, TANK_EMPTY, TANK_FULL, PROCESS, CAMERA
++        CAL_RESULT, PUMP_SECONDS, PUMP_VOLUME, PROCESS, CAMERA
+     };
+     enum class Field : uint8_t {
+         FOOD, WATER, SLOT_ON, SLOT_HOUR, SLOT_MINUTE, SLOT_FOOD, SLOT_WATER,
+         ONE_DELAY, ONE_FOOD, ONE_WATER, STEP_PERIOD, DIRECTION, JOG_STEPS,
+-        FORWARD_STEPS, REVERSE_STEPS, PUMP_FACTOR, IR_LOW, TANK_PROTECTION,
+-        TANK_MIN, FOOD_LIMIT, WATER_LIMIT, FEED_TIMEOUT, WATER_TIMEOUT,
++        FORWARD_STEPS, REVERSE_STEPS, PUMP_FACTOR, IR_LOW,
++        FOOD_LIMIT, WATER_LIMIT, FEED_TIMEOUT, WATER_TIMEOUT,
+         BRIGHTNESS, INVERT, YEAR, MONTH, DAY, HOUR, MINUTE
+     };
+     enum class Action : uint8_t {
+         NONE, MANUAL, SCHEDULE, DIAGNOSTICS, SERVICE, HOME, FOOD, WATER, BOTH,
+         SLOT, ONE_SHOT, ONE_ARM, ONE_CANCEL, AUGER, PUMP, SCALES, SENSOR_SETTINGS,
+         LIMITS, DISPLAY_SETTINGS, CLOCK, RESET, EDIT, JOG, PUMP_TEST, PUMP_CAL,
+-        FOOD_SCALE, WATER_SCALE, TARE, SCALE_CAL, TANK_CAL, CLOCK_SAVE, RTC_RETRY,
++        FOOD_SCALE, WATER_SCALE, TARE, SCALE_CAL, CLOCK_SAVE, RTC_RETRY,
+         BACK, CAMERA
+     };
+     struct Row {
+@@ -90,7 +90,7 @@ namespace
+     int clockYear = 2026, clockMonth = 1, clockDay = 1, clockHour = 12, clockMinute = 0;
+     ScaleId scaleId = ScaleId::FOOD;
+     bool tareOnly = false;
+-    int captureStage = 0; // 0 = tare/empty, 1 = loaded, 2 = empty tank, 3 = full tank.
++    int captureStage = 0; // 0 = tare/empty, 1 = loaded.
+     int32_t zeroRaw = 0;
+     int32_t zeroSpan = 0;
+     float knownMassG = 100;
+@@ -250,11 +250,8 @@ namespace
+         }
+         case Page::SENSOR_SETTINGS:
+             addBool("Корм при LOW", c.foodPresentLow, Field::IR_LOW);
+-            add("Калибровка бака", "Пустой / полный", Action::TANK_CAL);
+-            addBool("Защита без воды", c.lowWaterProtection, Field::TANK_PROTECTION);
+-            addField("Минимум воды", c.minTankPercent, "%", Field::TANK_MIN);
+-            snprintf(text, sizeof(text), "%ld / %ld", static_cast<long>(c.tankRawEmpty), static_cast<long>(c.tankRawFull));
+-            add("ADC: пуст / полон", text);
++            snprintf(text, sizeof(text), "%d", Sensors::readings().tankRaw);
++            add("Бак: ADC", text);
+             snprintf(text, sizeof(text), "%d", Sensors::readings().irRaw); add("ИК: сигнал GPIO", text);
+             break;
+         case Page::LIMITS:
+@@ -288,20 +285,20 @@ namespace
+         editSelection = selection;
+         editFirstVisible = firstVisible;
+         snprintf(editLabel, sizeof(editLabel), "%s", row.label);
+-        editMin = 0; editMax = 200; editStep = 1;
++        editMin = 0; editMax = 0; editStep = 1;
+         const auto& c = Config::get();
+         const auto& slot = c.schedule[editingSlot];
+         switch (editField) {
+-        case Field::FOOD: editValue = c.foodPortionG; editMin = 1; break;
+-        case Field::WATER: editValue = c.waterPortionMl; editMin = 1; break;
++        case Field::FOOD: editValue = c.foodPortionG; editMax = Settings::MAX_FOOD_PORTION_G; editMin = 1; break;
++        case Field::WATER: editValue = c.waterPortionMl; editMax = Settings::MAX_WATER_PORTION_ML; editMin = 1; break;
+         case Field::SLOT_ON: editValue = slot.enabled; editMax = 1; break;
+         case Field::SLOT_HOUR: editValue = slot.hour; editMax = 23; break;
+         case Field::SLOT_MINUTE: editValue = slot.minute; editMax = 59; break;
+-        case Field::SLOT_FOOD: editValue = slot.foodG; break;
+-        case Field::SLOT_WATER: editValue = slot.waterMl; break;
++        case Field::SLOT_FOOD: editValue = slot.foodG; editMax = Settings::MAX_FOOD_PORTION_G; break;
++        case Field::SLOT_WATER: editValue = slot.waterMl; editMax = Settings::MAX_WATER_PORTION_ML; break;
+         case Field::ONE_DELAY: editValue = oneDelayMinutes; editMin = 1; editMax = 10080; editStep = 5; break;
+-        case Field::ONE_FOOD: editValue = oneFoodG; break;
+-        case Field::ONE_WATER: editValue = oneWaterMl; break;
++        case Field::ONE_FOOD: editValue = oneFoodG; editMax = Settings::MAX_FOOD_PORTION_G; break;
++        case Field::ONE_WATER: editValue = oneWaterMl; editMax = Settings::MAX_WATER_PORTION_ML; break;
+         case Field::STEP_PERIOD: editValue = c.stepHalfPeriodUs; editMin = 200; editMax = 10000; editStep = 50; break;
+         case Field::DIRECTION: editValue = c.stepperDirectionHigh; editMax = 1; break;
+         case Field::JOG_STEPS: editValue = c.jogSteps; editMin = 1; editMax = 20000; editStep = 10; break;
+@@ -309,8 +306,6 @@ namespace
+         case Field::REVERSE_STEPS: editValue = c.reverseSteps; editMax = c.forwardSteps - 1; editStep = 5; break;
+         case Field::PUMP_FACTOR: editValue = c.pumpMsPerMl; editMin = 10; editMax = 20000; editStep = 10; break;
+         case Field::IR_LOW: editValue = c.foodPresentLow; editMax = 1; break;
+-        case Field::TANK_PROTECTION: editValue = c.lowWaterProtection; editMax = 1; break;
+-        case Field::TANK_MIN: editValue = c.minTankPercent; editMax = 50; break;
+         case Field::FOOD_LIMIT: editValue = c.foodBowlMaxG; editMin = 10; editMax = 2000; editStep = 10; break;
+         case Field::WATER_LIMIT: editValue = c.waterBowlMaxG; editMin = 10; editMax = 2000; editStep = 10; break;
+         case Field::FEED_TIMEOUT: editValue = c.feedTimeoutMs / 1000; editMin = 5; editMax = 180; break;
+@@ -350,8 +345,6 @@ namespace
+         case Field::REVERSE_STEPS: c.reverseSteps = editValue; break;
+         case Field::PUMP_FACTOR: c.pumpMsPerMl = editValue; break;
+         case Field::IR_LOW: c.foodPresentLow = editValue != 0; break;
+-        case Field::TANK_PROTECTION: c.lowWaterProtection = editValue != 0; break;
+-        case Field::TANK_MIN: c.minTankPercent = editValue; break;
+         case Field::FOOD_LIMIT: c.foodBowlMaxG = editValue; break;
+         case Field::WATER_LIMIT: c.waterBowlMaxG = editValue; break;
+         case Field::FEED_TIMEOUT: c.feedTimeoutMs = editValue * 1000; break;
+@@ -444,7 +437,6 @@ namespace
+         case Action::WATER_SCALE: scaleId = ScaleId::WATER; go(Page::SCALE); break;
+         case Action::TARE: tareOnly = true; go(Page::CAL_EMPTY); break;
+         case Action::SCALE_CAL: tareOnly = false; go(Page::CAL_EMPTY); break;
+-        case Action::TANK_CAL: go(Page::TANK_EMPTY); break;
+         case Action::CLOCK_SAVE:
+             if (Clock::set(DateTime(clockYear, clockMonth, clockDay, clockHour, clockMinute, 0)))
+                 showNotice("Дата и время записаны в RTC.", Page::CLOCK);
+@@ -460,9 +452,9 @@ namespace
+     void beginCapture(int stage)
+     {
+         captureStage = stage;
+-        const bool success = stage >= 2 ? Sensors::captureTank() : Sensors::capture(scaleId);
++        const bool success = Sensors::capture(scaleId);
+         if (success) go(Page::CAL_CAPTURE);
+-        else showNotice("Нет данных датчика. Проверьте подключение и повторите.", stage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE);
++        else showNotice("Нет данных датчика. Проверьте подключение и повторите.", Page::SCALE);
+     }
+ 
+     void updateCapture()
+@@ -472,7 +464,7 @@ namespace
+         if (state == CaptureState::BUSY) return;
+         if (state == CaptureState::FAILED) {
+             Sensors::cancelCapture();
+-            showNotice("Датчик не ответил вовремя. Настройки не изменены.", captureStage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE);
++            showNotice("Датчик не ответил вовремя. Настройки не изменены.", Page::SCALE);
+             return;
+         }
+         if (state != CaptureState::DONE) return;
+@@ -497,16 +489,6 @@ namespace
+             }
+             proposedFactor = static_cast<float>(delta) / knownMassG;
+             go(Page::CAL_RESULT);
+-        } else if (captureStage == 2) {
+-            zeroRaw = raw;
+-            go(Page::TANK_FULL);
+-        } else {
+-            if (std::abs(raw - zeroRaw) < 50 || span > 100) {
+-                showNotice("Сигнал бака почти не изменился или нестабилен. Проверьте датчик.", Page::SENSOR_SETTINGS); return;
+-            }
+-            auto c = Config::get();
+-            c.tankRawEmpty = zeroRaw; c.tankRawFull = raw; c.tankCalibrated = true;
+-            if (save(c, Page::SENSOR_SETTINGS)) showNotice("Калибровка бака сохранена. Защиту без воды можно включить отдельно.", Page::SENSOR_SETTINGS);
+         }
+     }
+ 
+@@ -540,8 +522,6 @@ namespace
+         case Page::CAL_RESULT: return "Результат калибровки";
+         case Page::PUMP_SECONDS: return "Время теста насоса";
+         case Page::PUMP_VOLUME: return "Измеренный объём";
+-        case Page::TANK_EMPTY: return "Калибровка: пустой бак";
+-        case Page::TANK_FULL: return "Калибровка: полный бак";
+         case Page::PROCESS: return FeedingController::info().state == MachineState::ERROR ? "Ошибка" : "Выполнение";
+         }
+         return "CYBER BOWL";
+@@ -557,7 +537,7 @@ namespace
+         if (page == Page::DIAGNOSTICS) return "BACK: меню";
+         if (page == Page::CAMERA) return "UP/DN:страница  BACK:меню";
+         if (page == Page::CAL_EMPTY || page == Page::CAL_LOAD || page == Page::CAL_RESULT ||
+-            page == Page::TANK_EMPTY || page == Page::TANK_FULL || page == Page::CONFIRM)
++            page == Page::CONFIRM)
+             return "OK: принять  BACK: отмена";
+         return "UP/DN:выбор  OK:вход  BACK:назад";
+     }
+@@ -638,8 +618,7 @@ namespace
+         if (s.water.valid) snprintf(right, sizeof(right), "%.1f г", s.water.grams);
+         else snprintf(right, sizeof(right), "%s", s.water.connected ? "Калибровка" : "Нет данных");
+         paintRow(2, "Миска воды", right);
+-        if (s.tankValid) snprintf(right, sizeof(right), "Вода: %d%%", s.tankPercent);
+-        else snprintf(right, sizeof(right), "Бак: не калибр.");
++        snprintf(right, sizeof(right), "%s", s.waterPresent ? "Вода в баке" : "Бак пуст");
+         paintRow(3, s.foodAvailable ? "Корм в бункере" : "Бункер пуст", right, false, s.foodAvailable ? GREEN : ORANGE);
+         paintRow(4, FeedingController::nextFeedingText(), "", false, ACCENT);
+         paintRow(5, FeedingController::info().message, "", false, MUTED);
+@@ -779,10 +758,6 @@ namespace
+             snprintf(value, sizeof(value), "%.1f мл", measuredMl); paintRow(1, value, "", false, TEXT, 2);
+             snprintf(value, sizeof(value), "Тест длился %lu с", static_cast<unsigned long>(pumpSeconds)); paintRow(2, value);
+             paragraph("UP / DOWN: объём с шагом 0.5 мл.\nOK: сохранить расход\nBACK: отменить", 3); break;
+-        case Page::TANK_EMPTY:
+-            paragraph("Опустошите бак до рабочего нулевого уровня. Датчик должен быть на штатном месте.\nOK: измерить пустой бак\nBACK: отменить"); break;
+-        case Page::TANK_FULL:
+-            paragraph("Заполните бак до рабочего полного уровня.\nOK: измерить полный бак\nBACK: отменить"); break;
+         default: break;
+         }
+     }
+@@ -848,7 +823,7 @@ void Ui::handleButtons()
+             previousRendered = Page::NOTICE;
+             if (processReturn == Page::PUMP_VOLUME && FeedingController::info().lastSuccess) {
+                 measuredMl = std::max(0.5f, std::min(1000.0f,
+-                    std::round(pumpSeconds * 1000 / Config::get().pumpMsPerMl * 2) / 2));
++                    std::round(pumpSeconds * Settings::MS_PER_SECOND / Config::get().pumpMsPerMl * 2) / 2));
+                 go(Page::PUMP_VOLUME); return;
+             }
+         }
+@@ -879,7 +854,7 @@ void Ui::handleButtons()
+         return;
+     }
+     if (page == Page::CAL_CAPTURE) {
+-        if (back.pressed()) { Sensors::cancelCapture(); go(captureStage >= 2 ? Page::SENSOR_SETTINGS : Page::SCALE); }
++        if (back.pressed()) { Sensors::cancelCapture(); go(Page::SCALE); }
+         return;
+     }
+     if (page == Page::CAL_MASS) {
+@@ -900,16 +875,11 @@ void Ui::handleButtons()
+         }
+         return;
+     }
+-    if (page == Page::TANK_EMPTY || page == Page::TANK_FULL) {
+-        if (back.pressed()) go(Page::SENSOR_SETTINGS);
+-        else if (ok.pressed()) beginCapture(page == Page::TANK_EMPTY ? 2 : 3);
+-        return;
+-    }
+     if (page == Page::PUMP_SECONDS) {
+         if (back.pressed()) { go(Page::PUMP); return; }
+-        if (up.repeated()) pumpSeconds = std::min(60u, pumpSeconds + 1);
+-        if (down.repeated()) pumpSeconds = std::max(1u, pumpSeconds - 1);
+-        if (ok.pressed()) { FeedingController::startPumpTest(pumpSeconds * 1000); startProcess(processReturn); }
++        if (up.repeated()) pumpSeconds = std::min(Settings::PUMP_TEST_MAX_MS / Settings::MS_PER_SECOND, pumpSeconds + 1);
++        if (down.repeated()) pumpSeconds = std::max(Settings::PUMP_TEST_MIN_MS / Settings::MS_PER_SECOND, pumpSeconds - 1);
++        if (ok.pressed()) { FeedingController::startPumpTest(pumpSeconds * Settings::MS_PER_SECOND); startProcess(processReturn); }
+         return;
+     }
+     if (page == Page::PUMP_VOLUME) {
+@@ -917,7 +887,7 @@ void Ui::handleButtons()
+         if (up.repeated()) measuredMl = std::min(1000.0f, measuredMl + 0.5f);
+         if (down.repeated()) measuredMl = std::max(0.5f, measuredMl - 0.5f);
+         if (ok.pressed()) {
+-            auto c = Config::get(); c.pumpMsPerMl = pumpSeconds * 1000.0f / measuredMl;
++            auto c = Config::get(); c.pumpMsPerMl = pumpSeconds * Settings::MS_PER_SECOND / measuredMl;
+             if (save(c, Page::PUMP)) showNotice("Расход насоса сохранён.", Page::PUMP);
+         }
+         return;
+diff --git a/firmware/test/native/fakes.cpp b/firmware/test/native/fakes.cpp
+index 2077463..29e69b8 100644
+--- a/firmware/test/native/fakes.cpp
++++ b/firmware/test/native/fakes.cpp
+@@ -38,8 +38,7 @@ void reset()
+     sensors.food.connected = sensors.food.valid = true;
+     sensors.water.connected = sensors.water.valid = true;
+     sensors.foodAvailable = true;
+-    sensors.tankValid = true;
+-    sensors.tankPercent = 75;
++    sensors.waterPresent = true;
+     rtcValid = true;
+     augerTimeout = false;
+     date = DateTime(date.unixtime() + 86401);
+@@ -82,6 +81,8 @@ void Pump::begin() { off(); }
+ void Pump::on() { Fake::pump = true; }
+ void Pump::off() { Fake::pump = false; }
+ bool Pump::running() { return Fake::pump; }
++Auger auger;
++
+ bool Auger::begin() { return true; }
+ bool Auger::run(bool, uint32_t, uint32_t, uint32_t) { Fake::auger = true; Fake::augerSteps = 0; return true; }
+ void Auger::stop() { Fake::auger = false; }
+diff --git a/firmware/test/native/test_main.cpp b/firmware/test/native/test_main.cpp
+index d27e73d..dccc6f4 100644
+--- a/firmware/test/native/test_main.cpp
++++ b/firmware/test/native/test_main.cpp
+@@ -24,7 +24,6 @@ int main()
+     auto c = Settings::defaults();
+     c.foodScale.factor = -400; check(Settings::valid(c));
+     c.reverseSteps = c.forwardSteps; check(!Settings::valid(c));
+-    c = Settings::defaults(); c.lowWaterProtection = true; check(!Settings::valid(c));
+     const float oldPortion = Config::get().foodPortionG;
+     c = Config::get(); c.foodPortionG = 45; Fake::nvsFail = true;
+     check(!Config::commit(c)); check(Config::get().foodPortionG == oldPortion); Fake::nvsFail = false;
+@@ -36,6 +35,12 @@ int main()
+     Fake::sensors.water.grams = 35; FeedingController::update(); state(MachineState::IDLE);
+     check(!Fake::pump && !Fake::auger);
+ 
++    // The threshold-based tank sensor blocks water and stops an active pump.
++    stopAndReset(); Fake::sensors.waterPresent = false;
++    check(!FeedingController::startCycle(0, 10)); state(MachineState::ERROR); check(!Fake::pump);
++    stopAndReset(); check(FeedingController::startCycle(0, 10));
++    Fake::sensors.waterPresent = false; FeedingController::update(); state(MachineState::ERROR); check(!Fake::pump);
++
+     // Stale/disconnected scale aborts an active feed.
+     stopAndReset(); check(FeedingController::startCycle(20, 0));
+     Fake::sensors.food.valid = false; FeedingController::update(); state(MachineState::ERROR); check(!Fake::auger);
+@@ -75,7 +80,7 @@ int main()
+ 
+     // A due event during manual operation is skipped, with NVS writes deferred until stopped.
+     stopAndReset(); Fake::date = DateTime(2026, 10, 12, 8, 0, 0);
+-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].waterMl = 0; check(Config::commit(c));
++    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].waterMl = 0; check(Config::commit(c));
+     check(FeedingController::startCycle(10, 0));
+     const auto writes = Fake::nvsWrites;
+     FeedingController::updateSchedule(false); check(Fake::nvsWrites == writes);
+@@ -84,21 +89,21 @@ int main()
+ 
+     // Calibration/service mode does not dispense and consumes that occurrence.
+     stopAndReset(); Fake::date = DateTime(2026, 10, 13, 8, 0, 0);
+-    c = Config::get(); c.schedule[0].enabled = true; check(Config::commit(c));
++    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; check(Config::commit(c));
+     FeedingController::updateSchedule(true); state(MachineState::IDLE);
+     Fake::date = DateTime(2026, 10, 13, 8, 0, 1); FeedingController::updateSchedule(false); state(MachineState::IDLE);
+ 
+     // Invalid clock never starts an event; expired one-shot does not catch up.
+-    stopAndReset(); c = Config::get(); c.schedule[0].enabled = true; check(Config::commit(c));
++    stopAndReset(); c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; check(Config::commit(c));
+     Fake::date = DateTime(2026, 10, 14, 8, 0, 0); Fake::rtcValid = false;
+     FeedingController::updateSchedule(false); state(MachineState::IDLE);
+     Fake::rtcValid = true; c = Settings::defaults(); c.oneShot.enabled = true;
+-    c.oneShot.dueEpoch = Fake::date.unixtime() - 120; check(Config::commit(c));
++    c.oneShot.foodG = 15; c.oneShot.dueEpoch = Fake::date.unixtime() - 120; check(Config::commit(c));
+     FeedingController::updateSchedule(false); state(MachineState::IDLE); check(!Config::get().oneShot.enabled);
+ 
+     // Coincident slots cannot cause a second unexpected meal.
+     stopAndReset(); Fake::date = DateTime(2026, 10, 15, 8, 0, 0);
+-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].waterMl = 0;
++    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].waterMl = 0;
+     c.schedule[1] = c.schedule[0]; check(Config::commit(c));
+     FeedingController::updateSchedule(false); state(MachineState::FEEDING);
+     check(Config::get().lastRunDay[0] == 20261015 && Config::get().lastRunDay[1] == 20261015);
+@@ -125,7 +130,7 @@ int main()
+ 
+     // Render the REAL ui.cpp with a framebuffer display fake.
+     stopAndReset(); Fake::date = DateTime(2026, 10, 8, 16, 51, 3);
+-    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].hour = 20; check(Config::commit(c));
++    c = Config::get(); c.schedule[0].enabled = true; c.schedule[0].foodG = 15; c.schedule[0].hour = 20; check(Config::commit(c));
+     Fake::sensors.food.grams = 12.4f; Fake::sensors.water.grams = 85.2f;
+     check(Ui::begin()); draw(); Fake::screenshot("docs/home.ppm");
+     const auto clears = Fake::fullScreenClears;
+@@ -144,10 +149,10 @@ int main()
+     press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/calibration.ppm");
+     // Execute the actual UI calibration wizard: empty bowl -> known mass -> save.
+     press(Pins::BUTTON_OK_PIN); Fake::completeCapture(200000); draw();
+-    check(!Config::get().foodScale.calibrated); // No settings changed after the zero stage.
++    check(Config::get().foodScale.offset == 0); // No settings changed after the zero stage.
+     press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_OK_PIN);
+     Fake::completeCapture(240000); draw();
+-    check(!Config::get().foodScale.calibrated); // Proposal is still uncommitted.
++    check(Config::get().foodScale.factor == Settings::DEFAULT_FOOD_SCALE_FACTOR); // Proposal is still uncommitted.
+     press(Pins::BUTTON_OK_PIN);
+     check(Config::get().foodScale.calibrated && Config::get().foodScale.tared);
+     check(Config::get().foodScale.offset == 200000);
+@@ -157,6 +162,7 @@ int main()
+     Fake::completeCapture(200100); draw();
+     check(Config::get().foodScale.offset == 200100 && Config::get().foodScale.factor == 400);
+     // Execute the actual pump calibration UI: 10 s test -> measured 10 ml -> 1000 ms/ml.
++    c = Config::get(); c.pumpMsPerMl = 952; check(Config::commit(c));
+     press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN);
+     press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_OK_PIN);
+     press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_OK_PIN);
+diff --git a/firmware/test/native/test_sensors.cpp b/firmware/test/native/test_sensors.cpp
+index 84f6bc1..dc3168f 100644
+--- a/firmware/test/native/test_sensors.cpp
++++ b/firmware/test/native/test_sensors.cpp
+@@ -14,7 +14,7 @@ int main()
+     Fake::hxSamples[Pins::FOOD_HX_DT_PIN].push_back(240000);
+     Sensors::update();
+     check(Sensors::readings().food.connected);
+-    check(!Sensors::readings().food.valid); // Uncalibrated counts cannot masquerade as grams.
++    check(Sensors::readings().food.valid); // Factory calibration is available by default.
+     auto c = Config::get();
+     c.foodScale.offset = 200000; c.foodScale.factor = 400;
+     c.foodScale.tared = c.foodScale.calibrated = true;
+@@ -29,7 +29,7 @@ int main()
+         Fake::advance(100); Fake::hxSamples[Pins::FOOD_HX_DT_PIN].push_back(200000 + i); Sensors::update();
+     }
+     check(Sensors::captureState() == CaptureState::DONE);
+-    check(Sensors::capturedRaw() == 200005 && Sensors::capturedSpan() == 11);
++    check(Sensors::capturedRaw() == 200004 && Sensors::capturedSpan() == Settings::CAPTURE_SAMPLES - 1);
+     Sensors::cancelCapture(); check(Sensors::capture(ScaleId::FOOD));
+     Fake::advance(Settings::CAPTURE_TIMEOUT_MS + 1); Sensors::update();
+     check(Sensors::captureState() == CaptureState::FAILED);
+@@ -40,10 +40,11 @@ int main()
+     Fake::adc = 1234; check(Sensors::captureTank());
+     for (int i = 0; i < Settings::CAPTURE_SAMPLES; ++i) { Fake::advance(100); Sensors::update(); }
+     check(Sensors::captureState() == CaptureState::DONE && Sensors::capturedRaw() == 1234);
+-    c.tankCalibrated = true; c.tankRawEmpty = 3000; c.tankRawFull = 1000;
+-    check(Config::commit(c)); Fake::adc = 2000; Fake::advance(100); Sensors::update();
+-    check(Sensors::readings().tankValid && Sensors::readings().tankPercent == 50);
+-    Fake::adc = 4000; Fake::advance(100); Sensors::update(); check(Sensors::readings().tankPercent == 0);
+-    Fake::adc = 0; Fake::advance(100); Sensors::update(); check(Sensors::readings().tankPercent == 100);
++    Fake::adc = Settings::WATER_LEVEL_THRESHOLD;
++    Fake::advance(Settings::SLOW_SENSOR_INTERVAL_MS); Sensors::update();
++    check(!Sensors::readings().waterPresent);
++    ++Fake::adc;
++    Fake::advance(Settings::SLOW_SENSOR_INTERVAL_MS); Sensors::update();
++    check(Sensors::readings().waterPresent);
+     std::cout << "PASS: " << checks << " assertions; real sensor module with queued HX711/ADC input.\n";
+ }
+diff --git a/firmware/src/config_store.cpp b/firmware/src/config_store.cpp
+--- a/firmware/src/config_store.cpp
++++ b/firmware/src/config_store.cpp
+@@ -1,101 +1,177 @@
+ #include "config_store.hpp"
+ #include <Preferences.h>
+-#include <cstring>
+ #include <type_traits>
+ 
+ namespace 
+ {
+-    // Magic signature "CBWL" (Cyber Bowl)
+     constexpr uint32_t MAGIC = 0x4342574C;
++    constexpr uint32_t VERSION = 3;
++
++    // Layout written by the last working version before the sensor refactor.
++    struct LegacyScale {
++        float factor;
++        int32_t offset;
++        bool tared;
++        bool calibrated;
++    };
++
++    struct LegacySlot {
++        bool enabled;
++        uint8_t hour;
++        uint8_t minute;
++        float foodG;
++        float waterMl;
++    };
+ 
+-    // Increment this if Settings::Data structure changes.
+-    // It forces a fallback to defaults instead of loading incompatible binary data.
+-    constexpr uint32_t VERSION = 2;
++    struct LegacyOneShot {
++        bool enabled;
++        uint32_t dueEpoch;
++        float foodG;
++        float waterMl;
++    };
++
++    struct LegacyData {
++        LegacyScale foodScale;
++        LegacyScale waterScale;
++        float foodPortionG;
++        float waterPortionMl;
++        float foodBowlMaxG;
++        float waterBowlMaxG;
++        float pumpMsPerMl;
++        uint32_t feedTimeoutMs;
++        uint32_t waterTimeoutMs;
++        uint32_t stepHalfPeriodUs;
++        uint32_t jogSteps;
++        uint32_t forwardSteps;
++        uint32_t reverseSteps;
++        bool stepperDirectionHigh;
++        bool foodPresentLow;
++        bool lowWaterProtection;
++        bool tankCalibrated;
++        int32_t tankRawEmpty;
++        int32_t tankRawFull;
++        uint8_t minTankPercent;
++        uint8_t brightnessPercent;
++        bool invertDisplay;
++        LegacySlot schedule[Settings::SCHEDULE_COUNT];
++        LegacyOneShot oneShot;
++        uint32_t lastRunDay[Settings::SCHEDULE_COUNT];
++    };
+ 
++    template<typename Data>
+     struct Stored {
+         uint32_t magic;
+         uint32_t version;
+         uint32_t size;
+         uint32_t checksum;
+-        Settings::Data data;
++        Data data;
+     };
+ 
+     static_assert(std::is_trivially_copyable<Settings::Data>::value, "NVS data must be plain");
+-
+     Preferences preferences;
+     Settings::Data data = Settings::defaults();
+-    bool isStorageReady = false;
+-    bool isLoadedFromStorage = false;
+-
+-    // FNV-1a hash function
+-    uint32_t calculateChecksum(const Settings::Data& d)
++    bool ready = false;
++    bool loaded = false;
++
++    template<typename Data>
++    uint32_t checksum(const Data& d)
+     {
+         uint32_t value = 2166136261u;
+         const auto* bytes = reinterpret_cast<const uint8_t*>(&d);
+-        for (size_t i = 0; i < sizeof(d); ++i) {
+-            value = (value ^ bytes[i]) * 16777619u;
+-        }
++        for (size_t i = 0; i < sizeof(d); ++i) value = (value ^ bytes[i]) * 16777619u;
+         return value;
+     }
+ 
+-    // Wraps raw settings into a Stored structure with metadata
+-    Stored makeStored(const Settings::Data& candidate)
++    template<typename Data>
++    bool load(Stored<Data>& saved, uint32_t version)
+     {
+-        Stored saved{};
+-        saved.magic = MAGIC;
+-        saved.version = VERSION;
+-        saved.size = sizeof(Settings::Data);
+-        saved.data = candidate;
+-        saved.checksum = calculateChecksum(saved.data);
+-        return saved;
++        return preferences.getBytesLength("config") == sizeof(saved) &&
++               preferences.getBytes("config", &saved, sizeof(saved)) == sizeof(saved) &&
++               saved.magic == MAGIC && saved.version == version &&
++               saved.size == sizeof(Data) && saved.checksum == checksum(saved.data);
+     }
+ 
+-    // Checks if the loaded binary structure is valid and belongs to the current version
+-    bool isValidStored(const Stored& saved)
++    Settings::Data migrate(const LegacyData& old)
+     {
+-        return saved.magic == MAGIC 
+-            && saved.version == VERSION
+-            && saved.size == sizeof(Settings::Data) 
+-            && saved.checksum == calculateChecksum(saved.data) 
+-            && Settings::valid(saved.data);
++        Settings::Data current{};
++        current.foodScale = {old.foodScale.factor, old.foodScale.offset,
++                             old.foodScale.calibrated, old.foodScale.tared};
++        current.waterScale = {old.waterScale.factor, old.waterScale.offset,
++                              old.waterScale.calibrated, old.waterScale.tared};
++        current.foodPortionG = old.foodPortionG;
++        current.waterPortionMl = old.waterPortionMl;
++        current.foodBowlMaxG = old.foodBowlMaxG;
++        current.waterBowlMaxG = old.waterBowlMaxG;
++        current.pumpMsPerMl = old.pumpMsPerMl;
++        current.feedTimeoutMs = old.feedTimeoutMs;
++        current.waterTimeoutMs = old.waterTimeoutMs;
++        current.stepHalfPeriodUs = old.stepHalfPeriodUs;
++        current.jogSteps = old.jogSteps;
++        current.forwardSteps = old.forwardSteps;
++        current.reverseSteps = old.reverseSteps;
++        current.stepperDirectionHigh = old.stepperDirectionHigh;
++        current.foodPresentLow = old.foodPresentLow;
++        current.brightnessPercent = old.brightnessPercent;
++        current.invertDisplay = old.invertDisplay;
++        current.oneShot = {old.oneShot.foodG, old.oneShot.waterMl,
++                           old.oneShot.dueEpoch, old.oneShot.enabled};
++        for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i) {
++            const auto& slot = old.schedule[i];
++            current.schedule[i] = {slot.hour, slot.minute, slot.foodG, slot.waterMl, slot.enabled};
++            current.lastRunDay[i] = old.lastRunDay[i];
++        }
++        return current;
+     }
++
+ }
+ 
++
+ bool Config::begin()
+ {
+-    isStorageReady = preferences.begin("cyber-bowl", false);
+-    if (!isStorageReady) return false;
+-
+-    Stored saved{};
+-    const size_t storedLength = preferences.getBytesLength("config");
++    loaded = false;
++    data = Settings::defaults();
++    ready = preferences.begin("cyber-bowl", false);
++    if (!ready) return false;
+ 
+-    if (storedLength == sizeof(saved) && 
+-        preferences.getBytes("config", &saved, sizeof(saved)) == sizeof(saved) &&
+-        isValidStored(saved)) 
+-    {
++    Stored<Settings::Data> saved{};
++    if (load(saved, VERSION) && Settings::valid(saved.data)) {
+         data = saved.data;
+-        isLoadedFromStorage = true;
++        loaded = true;
++        return true;
+     }
+ 
++    Stored<LegacyData> legacy{};
++    if (load(legacy, 1)) {
++        const auto migrated = migrate(legacy.data);
++        if (Settings::valid(migrated)) {
++            data = migrated;
++            loaded = true;
++        }
++    }
+     return true;
+ }
+ 
++
+ const Settings::Data& Config::get()     { return data; }
+-bool Config::storageReady()             { return isStorageReady; }
+-bool Config::loadedSavedSettings()      { return isLoadedFromStorage; }
++bool Config::storageReady()             { return ready; }
++bool Config::loadedSavedSettings()      { return loaded; }
++
+ 
+ bool Config::commit(const Settings::Data& candidate)
+ {
+-    if (!isStorageReady || !Settings::valid(candidate)) {
++    if (!ready || !Settings::valid(candidate))
+         return false;
+-    }
+-
+-    const Stored saved = makeStored(candidate);
++
++    Stored<Settings::Data> saved{};
++    saved.magic = MAGIC;
++    saved.version = VERSION;
++    saved.size = sizeof(Settings::Data);
++    saved.data = candidate;
++    saved.checksum = checksum(saved.data);
+ 
+-    if (preferences.putBytes("config", &saved, sizeof(saved)) != sizeof(saved)) {
++    if (preferences.putBytes("config", &saved, sizeof(saved)) != sizeof(saved))
+         return false;
+-    }
+-
++
+     data = candidate;
+     return true;
+ }
