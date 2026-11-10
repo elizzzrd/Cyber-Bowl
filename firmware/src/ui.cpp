@@ -30,8 +30,11 @@ namespace
     constexpr int ROW_HEIGHT = 28;
     Adafruit_ST7789 tft(&SPI, Pins::TFT_CS_PIN, Pins::TFT_DC_PIN, Pins::TFT_RST_PIN);
     GFXcanvas16 canvas(304, ROW_HEIGHT);
-    Button back(Pins::BUTTON_BACK_PIN), up(Pins::BUTTON_UP_PIN);
-    Button down(Pins::BUTTON_DOWN_PIN), ok(Pins::BUTTON_OK_PIN);
+    
+    Button back(Pins::BUTTON_BACK_PIN); 
+    Button up(Pins::BUTTON_UP_PIN);
+    Button down(Pins::BUTTON_DOWN_PIN);
+    Button ok(Pins::BUTTON_OK_PIN);
 
     enum class Page : uint8_t {
         HOME, MAIN, MANUAL, SCHEDULE, SLOT, ONE_SHOT, SERVICE, AUGER, PUMP,
