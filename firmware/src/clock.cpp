@@ -33,10 +33,12 @@ bool Clock::retry()
 {
     available = rtc.begin();
     timeValid = false;
+
     if (available) {
         cached = rtc.now();
         timeValid = !rtc.lostPower() && validDate(cached);
     }
+
     lastMs = millis();
     return available;
 }
@@ -44,29 +46,36 @@ bool Clock::retry()
 
 void Clock::update()
 {
-    if (!available || millis() - lastMs < Settings::RTC_INTERVAL_MS) return;
+    if (!available || millis() - lastMs < Settings::RTC_INTERVAL_MS) 
+        return;
+
     lastMs = millis();
-    Wire.beginTransmission(0x68);
+    Wire.beginTransmission(DS3231_ADDRESS);
+
     if (Wire.endTransmission() != 0) {
         available = timeValid = false;
         return;
     }
+
     cached = rtc.now();
     if (!validDate(cached)) timeValid = false;
 }
 
 
-bool Clock::connected()     { return available; }
-bool Clock::valid()         { return available && timeValid; }
-DateTime Clock::now()       { return cached; }
+bool Clock::connected() const    { return available; }
+bool Clock::valid()     const    { return available && timeValid; }
+DateTime Clock::now()   const    { return cached; }
 
 
 bool Clock::set(const DateTime& date)
 {
-    if (!available || !validDate(date)) return false;
-    rtc.adjust(date);
+    if (!available || !validDate(date)) 
+        return false;
+    
+        rtc.adjust(date);
     cached = rtc.now();
     timeValid = validDate(cached) && cached.unixtime() == date.unixtime();
     lastMs = millis();
+    
     return timeValid;
 }

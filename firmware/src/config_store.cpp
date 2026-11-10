@@ -6,7 +6,7 @@
 namespace 
 {
     constexpr uint32_t MAGIC = 0x4342574C;
-    constexpr uint32_t VERSION = 1;
+    constexpr uint32_t VERSION = 2;
  
     struct Stored {
         uint32_t magic;

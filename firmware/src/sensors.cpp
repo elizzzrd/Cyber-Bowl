@@ -14,50 +14,132 @@ namespace
     HX711 water;
 
     SensorReadings data;
-    uint32_t lastOtherMs = 0;
+    
+    // Time of the last poll of "slow" sensors (IR and water level)
+    uint32_t lastSlowPollMs = 0;
 
-    bool foodSeen = false;
-    bool waterSeen = false;
+    // Flags: whether we have seen at least one valid sample since startup.
+    bool foodEverSampled = false;
+    bool waterEverSampled = false;
 
-    CaptureState captureStatus = CaptureState::IDLE;
-    ScaleId captureId = ScaleId::FOOD;
-
-    bool tankCapture = false;
-
+    CaptureState captureState = CaptureState::IDLE;
+    ScaleId captureTarget = ScaleId::FOOD;
+    bool isCapturingTank = false;
+    
     uint32_t captureStartedMs = 0;
-    uint8_t captureCount = 0;
-    int64_t rawSum = 0;
-    int32_t rawMin = 0;
-    int32_t rawMax = 0;
-    int32_t resultRaw = 0;
+    uint8_t  captureSamplesCount = 0;
+    int64_t  captureSum = 0;
+    int32_t  captureMin = 0;
+    int32_t  captureMax = 0;
+    int32_t  captureResult = 0;
 
-    void readScale(HX711& hx, ScaleReading& value, bool& seen, ScaleId id, uint32_t now)
+
+    bool isRawValid(int32_t raw)
+    {
+        return raw != Settings::HX711_RAW_MAX && raw != Settings::HX711_RAW_MIN;
+    }
+
+    bool isSensorConnected(const ScaleReading& value, uint32_t now, bool seen)
+    {
+        return seen && (now - value.sampledMs <= Settings::SENSOR_STALE_MS);
+    }
+
+    float getFactor(ScaleId id, const Settings::ScaleCalibration& c)
+    {
+        if (c.factor > Settings::MIN_VALID_FACTOR) {
+            return c.factor;
+        }
+        return (id == ScaleId::FOOD) ? Settings::DEFAULT_FOOD_SCALE_FACTOR 
+                                     : Settings::DEFAULT_WATER_SCALE_FACTOR;
+    }
+
+    void addSampleToCapture(int32_t raw)
+    {
+        captureSum += raw;
+        captureMin = std::min(captureMin, raw);
+        captureMax = std::max(captureMax, raw);
+
+        if (++captureSamplesCount == Settings::CAPTURE_SAMPLES) {
+            captureResult = static_cast<int32_t>(captureSum / captureSamplesCount);
+            captureState = CaptureState::DONE;
+        }
+    }
+
+    bool isCapturingThisScale(ScaleId id)
+    {
+        return captureState == CaptureState::BUSY && !isCapturingTank && id == captureTarget;
+    }
+
+    bool isCapturingTankNow()
+    {
+        return captureState == CaptureState::BUSY && isCapturingTank;
+    }
+
+    void recalculateScale(ScaleId id, ScaleReading& value, const Settings::ScaleCalibration& c)
+    {
+        const float factor = getFactor(id, c);
+        value.grams = static_cast<float>(static_cast<int64_t>(value.raw) - c.offset) / factor;
+        value.valid = value.connected && c.calibrated && c.tared && std::isfinite(value.grams);
+    }
+
+    void pollScale(HX711& hx, ScaleReading& value, bool& everSampled, ScaleId id, uint32_t now)
     {
         if (hx.is_ready()) {
-            const int32_t raw = hx.read(); // Exactly one ready sample, never read_average/tare.
-            if (raw != 0x7FFFFF && raw != -0x800000) {
+            const int32_t raw = hx.read();
+            if (isRawValid(raw)) {
                 value.raw = raw;
                 value.sampledMs = now;
-                seen = true;
+                everSampled = true;
 
-                if (captureStatus == CaptureState::BUSY && !tankCapture && id == captureId) {
-                    rawSum += raw;
-                    rawMin = std::min(rawMin, raw);
-                    rawMax = std::max(rawMax, raw);
-                    if (++captureCount == Settings::CAPTURE_SAMPLES) {
-                        resultRaw = static_cast<int32_t>(rawSum / captureCount);
-                        captureStatus = CaptureState::DONE;
-                    }
+                if (isCapturingThisScale(id)) {
+                    addSampleToCapture(raw);
                 }
             }
         }
 
-        value.connected = seen && now - value.sampledMs <= Settings::SENSOR_STALE_MS;
-        const auto& c = id == ScaleId::FOOD ? Config::get().foodScale : Config::get().waterScale;
-        value.grams = static_cast<float>(static_cast<int64_t>(value.raw) - c.offset) / c.factor;
-        value.valid = value.connected && c.calibrated && c.tared && std::isfinite(value.grams);
+        value.connected = isSensorConnected(value, now, everSampled);
+        const auto& c = (id == ScaleId::FOOD) ? Config::get().foodScale : Config::get().waterScale;
+        recalculateScale(id, value, c);
+    }
+
+    void pollSlowSensors(uint32_t now)
+    {
+        if (now - lastSlowPollMs < Settings::SLOW_SENSOR_INTERVAL_MS) 
+            return;
+
+        lastSlowPollMs = now;
+
+        // IR food sensor
+        data.irRaw = digitalRead(Pins::IR_SENSOR_PIN);
+        data.foodAvailable = (data.irRaw == (Config::get().foodPresentLow ? LOW : HIGH));
+
+        // Analog water level sensor
+        data.tankRaw = analogRead(Pins::WATER_LEVEL_PIN);
+        data.waterPresent = (data.tankRaw > Settings::WATER_LEVEL_THRESHOLD);
+
+        // Averaging for water level calibration
+        if (isCapturingTankNow()) {
+            addSampleToCapture(data.tankRaw);
+        }
+    }
+
+    bool startCapture(bool forTank)
+    {
+        if (captureState == CaptureState::BUSY) 
+            return false;
+
+        captureState = CaptureState::BUSY;
+        isCapturingTank = forTank;
+        captureStartedMs = millis();
+        captureSamplesCount = 0;
+        captureSum = 0;
+        captureMin = INT32_MAX;
+        captureMax = INT32_MIN;
+        return true;
     }
 }
+
+
 
 void Sensors::begin()
 {
@@ -69,104 +151,52 @@ void Sensors::begin()
     food.begin(Pins::FOOD_HX_DT_PIN, Pins::FOOD_HX_SCK_PIN);
     water.begin(Pins::WATER_HX_DT_PIN, Pins::WATER_HX_SCK_PIN);
     
-    // A disconnected DOUT must not float LOW and look like a connected HX711.
+    // Pull-up for disconnected HX711 DOUT to avoid false readiness
     pinMode(Pins::FOOD_HX_DT_PIN, INPUT_PULLUP);
     pinMode(Pins::WATER_HX_DT_PIN, INPUT_PULLUP);
 }
-
 
 void Sensors::update()
 {
     const uint32_t now = millis();
 
-    readScale(food, data.food, foodSeen, ScaleId::FOOD, now);
-    readScale(water, data.water, waterSeen, ScaleId::WATER, now);
+    pollScale(food, data.food, foodEverSampled, ScaleId::FOOD, now);
+    pollScale(water, data.water, waterEverSampled, ScaleId::WATER, now);
 
-    if (captureStatus == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS)
-        captureStatus = CaptureState::FAILED;
-    
-    if (now - lastOtherMs >= 100) 
-    {
-        lastOtherMs = now;
-        
-        data.irRaw = digitalRead(Pins::IR_SENSOR_PIN);
-        data.foodAvailable = data.irRaw == (Config::get().foodPresentLow ? LOW : HIGH);
-        data.tankRaw = analogRead(Pins::WATER_LEVEL_PIN);
-        
-        if (captureStatus == CaptureState::BUSY && tankCapture) {
-            rawSum += data.tankRaw;
-            rawMin = std::min(rawMin, static_cast<int32_t>(data.tankRaw));
-            rawMax = std::max(rawMax, static_cast<int32_t>(data.tankRaw));
-        
-            if (++captureCount == Settings::CAPTURE_SAMPLES) {
-                resultRaw = static_cast<int32_t>(rawSum / captureCount);
-                captureStatus = CaptureState::DONE;
-            }
-        }
-        
-        const auto& c = Config::get();
-        data.tankValid = c.tankCalibrated && std::abs(c.tankRawFull - c.tankRawEmpty) >= 50;
-        
-        if (data.tankValid) {
-            const float percent = 100.0f * (data.tankRaw - c.tankRawEmpty) /
-                                  (c.tankRawFull - c.tankRawEmpty);
-            data.tankPercent = std::max(0, std::min(100, static_cast<int>(percent)));
-        }
+    if (captureState == CaptureState::BUSY && now - captureStartedMs > Settings::CAPTURE_TIMEOUT_MS) {
+        captureState = CaptureState::FAILED;
     }
+    
+    pollSlowSensors(now);
 }
-
 
 const SensorReadings& Sensors::readings()      { return data; }
 const ScaleReading& Sensors::scale(ScaleId id) { return id == ScaleId::FOOD ? data.food : data.water; }
 
 bool Sensors::capture(ScaleId id)
 {
-    if (captureStatus == CaptureState::BUSY || !scale(id).connected) 
+    if (!scale(id).connected) 
         return false;
-    
-    captureId = id;
-    tankCapture = false;
-    captureStatus = CaptureState::BUSY;
-    captureStartedMs = millis();
-    captureCount = 0;
-    rawSum = 0;
-    rawMin = INT32_MAX;
-    rawMax = INT32_MIN;
-
-    return true;
+        
+    captureTarget = id;
+    return startCapture(false);
 }
-
 
 bool Sensors::captureTank()
 {
-    if (captureStatus == CaptureState::BUSY) 
-        return false;
-    
-    captureStatus = CaptureState::BUSY;
-    tankCapture = true;
-    captureStartedMs = millis();
-    captureCount = 0;
-    rawSum = 0;
-    rawMin = INT32_MAX;
-    rawMax = INT32_MIN;
-
-    return true;
+    return startCapture(true);
 }
 
-
-void Sensors::cancelCapture()           { captureStatus = CaptureState::IDLE; }
-CaptureState Sensors::captureState()    { return captureStatus; }
-uint8_t Sensors::captureProgress()      { return captureCount; }
-int32_t Sensors::capturedRaw()          { return resultRaw; }
-int32_t Sensors::capturedSpan()         { return rawMax - rawMin; }
-
+void Sensors::cancelCapture()           { captureState = CaptureState::IDLE; }
+CaptureState Sensors::captureState()    { return captureState; }
+uint8_t Sensors::captureProgress()      { return captureSamplesCount; }
+int32_t Sensors::capturedRaw()          { return captureResult; }
+int32_t Sensors::capturedSpan()         { return captureMax - captureMin; }
 
 void Sensors::applySettings()
 {
-    // Recompute from the cached raw sample immediately after tare/calibration.
     const auto& c = Config::get();
-    data.food.grams = static_cast<float>(static_cast<int64_t>(data.food.raw) - c.foodScale.offset) / c.foodScale.factor;
-    data.water.grams = static_cast<float>(static_cast<int64_t>(data.water.raw) - c.waterScale.offset) / c.waterScale.factor;
-    data.food.valid = data.food.connected && c.foodScale.calibrated && c.foodScale.tared;
-    data.water.valid = data.water.connected && c.waterScale.calibrated && c.waterScale.tared;
+    
+    recalculateScale(ScaleId::FOOD, data.food, c.foodScale);
+    recalculateScale(ScaleId::WATER, data.water, c.waterScale);
 }

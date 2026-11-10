@@ -2,65 +2,77 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace Settings {
-    constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
-    constexpr uint32_t DISPLAY_INTERVAL_MS = 100;
-    constexpr uint32_t SENSOR_STALE_MS = 1500;
-    constexpr uint32_t CAPTURE_TIMEOUT_MS = 5000;
-    constexpr uint8_t CAPTURE_SAMPLES = 12;
-    constexpr uint32_t RTC_INTERVAL_MS = 1000;
-    constexpr size_t SCHEDULE_COUNT = 4;
+#pragma once
+#include <cstdint>
+
+namespace Settings 
+{
+    constexpr uint32_t BUTTON_DEBOUNCE_MS         = 30;
+    constexpr uint32_t RTC_INTERVAL_MS            = 1000;
+    constexpr uint32_t SENSOR_STALE_MS            = 2000;
+    constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
+
+    constexpr uint8_t  CAPTURE_SAMPLES            = 10;
+    constexpr uint32_t CAPTURE_TIMEOUT_MS         = 3000;
+
+    constexpr float    DEFAULT_FOOD_SCALE_FACTOR  = 194.0f;
+    constexpr float    DEFAULT_WATER_SCALE_FACTOR = 178.0f;
+
+    constexpr int32_t  WATER_LEVEL_THRESHOLD      = 1650;
+
+    constexpr int32_t  HX711_RAW_MAX              = 0x7FFFFF;
+    constexpr int32_t  HX711_RAW_MIN              = -0x800000;
+    constexpr uint32_t SLOW_SENSOR_INTERVAL_MS    = 100;
+    constexpr float    MIN_VALID_FACTOR           = 0.01f;
 
     struct ScaleCalibration {
-        float factor = 400.0f;
+        float factor = 0.0f;
         int32_t offset = 0;
-        bool tared = false;
         bool calibrated = false;
+        bool tared = false;
     };
 
-    struct FeedingSlot {
-        bool enabled = false;
-        uint8_t hour = 8;
+    struct ScheduleSlot {
+        uint8_t hour = 0;
         uint8_t minute = 0;
-        float foodG = 30.0f;
-        float waterMl = 50.0f;  // Zero disables this part of the cycle.
+        float foodG = 0;
+        float waterMl = 0;
+        bool enabled = false;
     };
 
     struct OneShot {
-        bool enabled = false;
+        float foodG = 0;
+        float waterMl = 0;
         uint32_t dueEpoch = 0;
-        float foodG = 30.0f;
-        float waterMl = 50.0f;
+        bool enabled = false;
     };
 
     struct Data {
         ScaleCalibration foodScale;
         ScaleCalibration waterScale;
-        float foodPortionG = 30.0f;
-        float waterPortionMl = 50.0f;
-        float foodBowlMaxG = 300.0f;
-        float waterBowlMaxG = 300.0f;
-        float pumpMsPerMl = 952.0f;
-        uint32_t feedTimeoutMs = 30000;
-        uint32_t waterTimeoutMs = 180000;
-        uint32_t stepHalfPeriodUs = 800;
-        uint32_t jogSteps = 200;
-        uint32_t forwardSteps = 200;
-        uint32_t reverseSteps = 0;
-        bool stepperDirectionHigh = true;
+        
+        float foodPortionG        = 20.0f;
+        float waterPortionMl      = 50.0f;
+        float foodBowlMaxG        = 100.0f;
+        float waterBowlMaxG       = 200.0f;
+        float pumpMsPerMl         = 100.0f;
+        
+        uint32_t feedTimeoutMs    = 30000;
+        uint32_t waterTimeoutMs   = 30000;
+        uint32_t stepHalfPeriodUs = 1000;
+        
+        uint32_t jogSteps         = 100;
+        uint32_t forwardSteps     = 200;
+        uint32_t reverseSteps     = 100;
+        
+        uint8_t brightnessPercent = 100;
+        
         bool foodPresentLow = true;
-        bool lowWaterProtection = false;
-        bool tankCalibrated = false;
-        int32_t tankRawEmpty = 0;
-        int32_t tankRawFull = 2000;
-        uint8_t minTankPercent = 5;
-        uint8_t brightnessPercent = 80;
-        bool invertDisplay = false;
-        FeedingSlot schedule[SCHEDULE_COUNT];
+        
+        ScheduleSlot schedule[4];
         OneShot oneShot;
-        uint32_t lastRunDay[SCHEDULE_COUNT] = {};
     };
 
     Data defaults();
-    bool valid(const Data& data);
+    bool valid(const Data& d);
 }

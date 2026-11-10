@@ -1,11 +1,14 @@
 #pragma once
 #include <RTClib.h>
-namespace Clock {
+
+
+namespace Clock 
+{
     void begin();
     void update();
-    bool connected();
-    bool valid();
-    DateTime now();
+    bool connected() const;
+    bool valid() const;
+    DateTime now() const;
     bool set(const DateTime& date);
     bool retry();
 }
