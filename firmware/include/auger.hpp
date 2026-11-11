@@ -10,6 +10,8 @@ class Auger
                      uint32_t halfPeriodUs,
                      uint32_t pulses, 
                      uint32_t timeoutMs);
+        bool runTest(bool directionHigh, uint32_t periodUs);
+        void hold();
         void     stop();
         bool     running();
         bool     timedOut();

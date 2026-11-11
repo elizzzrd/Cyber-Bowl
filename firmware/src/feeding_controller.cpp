@@ -348,7 +348,7 @@ namespace
             uint32_t when = due.unixtime();
 
             if (when < epoch || c.lastRunDay[i] == dayKey(date))
-                when += Settings::SECONDS_PER_DAY;
+                when += Settings::SCHEDULE_DAY_SECONDS;
             if (when < earliest) {
                 earliest = when;
                 grams = slot.foodG;
@@ -428,36 +428,36 @@ bool FeedingController::startCycle(float foodG, float waterMl)
     return true;
 }
 
-bool FeedingController::startAugerTest()
+bool FeedingController::startAugerTest(bool directionHigh, uint32_t periodUs)
 {
-    if (process.state != MachineState::IDLE)
-        return false;
+    if (process.state != MachineState::IDLE) return false;
 
-    const auto& c = Config::get();
-    const uint64_t duration = static_cast<uint64_t>(c.jogSteps) * Settings::STEPPER_HALVES_PER_PULSE * c.stepHalfPeriodUs;
-
-    if (duration > static_cast<uint64_t>(Settings::AUGER_TEST_MAX_MS) * Settings::US_PER_MS) {
-        char text[Settings::CONTROLLER_TEXT_CAPACITY];
-        snprintf(text, sizeof(text), "Тест двигателя должен быть до %lu с",
-                 static_cast<unsigned long>(Settings::AUGER_TEST_MAX_MS / Settings::MS_PER_SECOND));
-        fail(text);
-        return false;
-    }
-
-    if (!auger.run(c.stepperDirectionHigh, c.stepHalfPeriodUs, c.jogSteps, Settings::AUGER_TEST_TIMEOUT_MS)) {
+    if (!auger.runTest(directionHigh, periodUs)) {
         fail("Не удалось запустить двигатель");
         return false;
     }
 
     process.state = MachineState::AUGER_TEST;
     process.startedMs = millis();
-    process.durationMs = static_cast<uint32_t>(duration / Settings::US_PER_MS);
+    process.durationMs = Settings::AUGER_TEST_TIMEOUT_MS;
+    process.completedSteps = 0;
     process.lastSuccess = false;
-
     setMessage("Тест двигателя");
     return true;
 }
 
+bool FeedingController::startAugerHold()
+{
+    if (process.state != MachineState::IDLE) return false;
+
+    auger.hold();
+    process.state = MachineState::AUGER_HOLD;
+    process.startedMs = millis();
+    process.durationMs = Settings::AUGER_HOLD_MS;
+    process.lastSuccess = false;
+    setMessage("Удержание вала");
+    return true;
+}
 
 bool FeedingController::startPumpTest(uint32_t durationMs)
 {
@@ -509,6 +509,9 @@ void FeedingController::update()
         break;
     case MachineState::AUGER_TEST:
         updateAugerTest();
+        break;
+    case MachineState::AUGER_HOLD:
+        if (elapsed >= process.durationMs) finish("Удержание завершено");
         break;
     case MachineState::PUMP_TEST:
         updatePumpTest(config, readings, elapsed);

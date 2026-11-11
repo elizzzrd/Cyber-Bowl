@@ -1,5 +1,6 @@
 #include "auger.hpp"
 #include "pins.hpp"
+#include "settings.hpp"
 
 #include <Arduino.h>
 #include <esp_arduino_version.h>
@@ -28,7 +29,8 @@ namespace
         constexpr uint32_t MIN_HALF_PERIOD_US = 200;      // max speed
         constexpr uint32_t MAX_HALF_PERIOD_US = 10000;    // min speed
         constexpr uint32_t MAX_TIMEOUT_MS     = 180000;   // 3 minutes
-        constexpr uint32_t SETUP_DELAY_US     = 10;       // A4988 setup time
+        constexpr uint32_t DIRECTION_SETUP_US = 20;
+        constexpr uint32_t ENABLE_SETTLE_MS = 20;       // A4988 setup time
     }
 
 
@@ -44,6 +46,9 @@ namespace
     volatile uint32_t ticksElapsed      = 0;      // timer ticks elapsed
     volatile uint32_t ticksUntilTimeout = 0;      // ticks before timeout
 
+
+    volatile uint32_t testTargetPeriodUs = 0;
+    volatile uint32_t testTicksToEdge = 0;
 
     // ---- RAII critical sections --------------------------------------------
     struct CriticalSection
@@ -94,6 +99,30 @@ namespace
         }
     }
 
+    void IRAM_ATTR emitTestEdge()
+    {
+        if (--testTicksToEdge != 0) return;
+
+        emitStepEdge();
+        if (!active) return;
+        if (stepLevelHigh) {
+            testTicksToEdge = 1;
+            return;
+        }
+
+        const uint32_t stepIndex = stepsCompleted - 1;
+        const uint32_t remaining = stepsRequested - 1 - stepIndex;
+        uint32_t ramp = stepIndex < remaining ? stepIndex : remaining;
+        if (ramp > Settings::AUGER_TEST_RAMP_STEPS)
+            ramp = Settings::AUGER_TEST_RAMP_STEPS;
+        const uint32_t startPeriod = Settings::AUGER_TEST_PERIOD_US[0];
+        const uint32_t period = startPeriod -
+            (startPeriod - testTargetPeriodUs) * ramp / Settings::AUGER_TEST_RAMP_STEPS;
+        // Round to the nearest timer tick and subtract the preceding HIGH tick.
+        testTicksToEdge = (period + Settings::AUGER_TEST_TICK_US / 2) /
+                          Settings::AUGER_TEST_TICK_US - 1;
+    }
+
     // ---- Timer ISR ---------------------------------------------------------
     void IRAM_ATTR onTimer()
     {
@@ -103,6 +132,8 @@ namespace
         if (++ticksElapsed >= ticksUntilTimeout) {
             timeoutReached = true;
             haltOutput();
+        } else if (testTargetPeriodUs != 0) {
+            emitTestEdge();
         } else {
             emitStepEdge();
         }
@@ -126,9 +157,8 @@ namespace
         inline void stop(hw_timer_t* t)
         {
             if (!t) return;
-        #if ESP_ARDUINO_VERSION_MAJOR >= 3
             timerStop(t);
-        #else
+        #if ESP_ARDUINO_VERSION_MAJOR < 3
             timerAlarmDisable(t);
         #endif
         }
@@ -139,11 +169,11 @@ namespace
             timerWrite(t, 0);
         #if ESP_ARDUINO_VERSION_MAJOR >= 3
             timerAlarm(t, periodUs, true, 0);
-            timerStart(t);
         #else
             timerAlarmWrite(t, periodUs, true);
             timerAlarmEnable(t);
         #endif
+            timerStart(t);
         }
     } 
 
@@ -186,6 +216,31 @@ bool Auger::run(bool     directionHigh,
     prepareCounters(pulses, halfPeriodUs, timeoutMs);
     timer_api::start(timer, halfPeriodUs);
     return true;
+}
+
+
+bool Auger::runTest(bool directionHigh, uint32_t periodUs)
+{
+    if (!timer || running() || periodUs < Settings::AUGER_TEST_PERIOD_US[3] ||
+        periodUs > Settings::AUGER_TEST_PERIOD_US[0]) return false;
+
+    stop();
+    configureDriver(directionHigh);
+    prepareCounters(Settings::AUGER_TEST_STEPS, Settings::AUGER_TEST_TICK_US,
+                    Settings::AUGER_TEST_TIMEOUT_MS);
+    {
+        CriticalSection lock;
+        testTargetPeriodUs = periodUs;
+        testTicksToEdge = 1;
+    }
+    timer_api::start(timer, Settings::AUGER_TEST_TICK_US);
+    return true;
+}
+
+void Auger::hold()
+{
+    stop();
+    digitalWrite(Pins::STEPPER_ENABLE_PIN, LOW);
 }
 
 
@@ -234,8 +289,9 @@ bool Auger::isValidRequest(uint32_t halfPeriodUs, uint32_t timeoutMs) const
 void Auger::configureDriver(bool directionHigh)
 {
     digitalWrite(Pins::STEPPER_DIR_PIN, directionHigh ? HIGH : LOW);
+    delayMicroseconds(limits::DIRECTION_SETUP_US);
     digitalWrite(Pins::STEPPER_ENABLE_PIN, LOW);
-    delayMicroseconds(limits::SETUP_DELAY_US);   // A4988 setup time
+    delay(limits::ENABLE_SETTLE_MS);
 }
 
 
@@ -243,6 +299,7 @@ void Auger::prepareCounters(uint32_t pulses, uint32_t halfPeriodUs, uint32_t tim
 {
     CriticalSection lock;
 
+    testTargetPeriodUs = 0;
     stepsCompleted = 0;
     stepsRequested = pulses;
     ticksElapsed   = 0;

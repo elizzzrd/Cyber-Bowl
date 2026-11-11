@@ -1,65 +1,20 @@
 #include "config_store.hpp"
+#include "config_legacy.hpp"
 #include <Preferences.h>
 #include <type_traits>
 
-namespace 
+namespace
 {
-    constexpr uint32_t MAGIC = 0x4342574C;
-    constexpr uint32_t VERSION = 3;
- 
-    // Layout written by the last working version before the sensor refactor.
-    struct LegacyScale {
-        float factor;
-        int32_t offset;
-        bool tared;
-        bool calibrated;
-    };
+    using ConfigStorage::LegacyData;
 
-    struct LegacySlot {
-        bool enabled;
-        uint8_t hour;
-        uint8_t minute;
-        float foodG;
-        float waterMl;
-    };
+    constexpr uint32_t CONFIG_MAGIC = 0x4342574C;
+    constexpr uint32_t CURRENT_FORMAT_VERSION = 3;
+    constexpr uint32_t LEGACY_FORMAT_VERSION = 1;
+    constexpr const char* NVS_NAMESPACE = "cyber-bowl";
+    constexpr const char* NVS_CONFIG_KEY = "config";
 
-    struct LegacyOneShot {
-        bool enabled;
-        uint32_t dueEpoch;
-        float foodG;
-        float waterMl;
-    };
-
-    struct LegacyData {
-        LegacyScale foodScale;
-        LegacyScale waterScale;
-        float foodPortionG;
-        float waterPortionMl;
-        float foodBowlMaxG;
-        float waterBowlMaxG;
-        float pumpMsPerMl;
-        uint32_t feedTimeoutMs;
-        uint32_t waterTimeoutMs;
-        uint32_t stepHalfPeriodUs;
-        uint32_t jogSteps;
-        uint32_t forwardSteps;
-        uint32_t reverseSteps;
-        bool stepperDirectionHigh;
-        bool foodPresentLow;
-        bool lowWaterProtection;
-        bool tankCalibrated;
-        int32_t tankRawEmpty;
-        int32_t tankRawFull;
-        uint8_t minTankPercent;
-        uint8_t brightnessPercent;
-        bool invertDisplay;
-        LegacySlot schedule[Settings::SCHEDULE_COUNT];
-        LegacyOneShot oneShot;
-        uint32_t lastRunDay[Settings::SCHEDULE_COUNT];
-    };
-
-    template<typename Data>
-    struct Stored {
+    template <typename Data> struct StoredRecord
+    {
         uint32_t magic;
         uint32_t version;
         uint32_t size;
@@ -67,35 +22,51 @@ namespace
         Data data;
     };
 
-    static_assert(std::is_trivially_copyable<Settings::Data>::value, "NVS data must be plain");
+    static_assert(std::is_trivially_copyable<Settings::Data>::value,
+                  "NVS settings must be trivially copyable");
+
     Preferences preferences;
-    Settings::Data data = Settings::defaults();
-    bool ready = false;
-    bool loaded = false;
- 
-    template<typename Data>
-    uint32_t checksum(const Data& d)
+    Settings::Data currentSettings = Settings::defaults();
+    bool storageAvailable = false;
+    bool settingsLoaded = false;
+
+    template <typename Data> uint32_t calculateChecksum(const Data& settings)
     {
-        uint32_t value = 2166136261u;
-        const auto* bytes = reinterpret_cast<const uint8_t*>(&d);
-        for (size_t i = 0; i < sizeof(d); ++i) value = (value ^ bytes[i]) * 16777619u;
-        return value;
+        uint32_t hash = 2166136261u;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(&settings);
+        for (size_t i = 0; i < sizeof(settings); ++i)
+        {
+            hash = (hash ^ bytes[i]) * 16777619u;
+        }
+        return hash;
     }
 
-    template<typename Data>
-    bool load(Stored<Data>& saved, uint32_t version)
+    template <typename Data>
+    bool recordMetadataValid(const StoredRecord<Data>& record, uint32_t expectedVersion)
     {
-        return preferences.getBytesLength("config") == sizeof(saved) &&
-               preferences.getBytes("config", &saved, sizeof(saved)) == sizeof(saved) &&
-               saved.magic == MAGIC && saved.version == version &&
-               saved.size == sizeof(Data) && saved.checksum == checksum(saved.data);
+        return record.magic == CONFIG_MAGIC && record.version == expectedVersion &&
+               record.size == sizeof(Data) && record.checksum == calculateChecksum(record.data);
     }
 
-    Settings::Data migrate(const LegacyData& old)
+    template <typename Data>
+    bool readStoredRecord(StoredRecord<Data>& record, uint32_t expectedVersion)
+    {
+        if (preferences.getBytesLength(NVS_CONFIG_KEY) != sizeof(record))
+        {
+            return false;
+        }
+        if (preferences.getBytes(NVS_CONFIG_KEY, &record, sizeof(record)) != sizeof(record))
+        {
+            return false;
+        }
+        return recordMetadataValid(record, expectedVersion);
+    }
+
+    Settings::Data migrateLegacySettings(const LegacyData& old)
     {
         Settings::Data current{};
-        current.foodScale = {old.foodScale.factor, old.foodScale.offset,
-                             old.foodScale.calibrated, old.foodScale.tared};
+        current.foodScale = {old.foodScale.factor, old.foodScale.offset, old.foodScale.calibrated,
+                             old.foodScale.tared};
         current.waterScale = {old.waterScale.factor, old.waterScale.offset,
                               old.waterScale.calibrated, old.waterScale.tared};
         current.foodPortionG = old.foodPortionG;
@@ -113,9 +84,10 @@ namespace
         current.foodPresentLow = old.foodPresentLow;
         current.brightnessPercent = old.brightnessPercent;
         current.invertDisplay = old.invertDisplay;
-        current.oneShot = {old.oneShot.foodG, old.oneShot.waterMl,
-                           old.oneShot.dueEpoch, old.oneShot.enabled};
-        for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i) {
+        current.oneShot = {old.oneShot.foodG, old.oneShot.waterMl, old.oneShot.dueEpoch,
+                           old.oneShot.enabled};
+        for (size_t i = 0; i < Settings::SCHEDULE_COUNT; ++i)
+        {
             const auto& slot = old.schedule[i];
             current.schedule[i] = {slot.hour, slot.minute, slot.foodG, slot.waterMl, slot.enabled};
             current.lastRunDay[i] = old.lastRunDay[i];
@@ -123,55 +95,93 @@ namespace
         return current;
     }
 
-}
+    bool loadCurrentSettings()
+    {
+        StoredRecord<Settings::Data> record{};
+        if (!readStoredRecord(record, CURRENT_FORMAT_VERSION) || !Settings::valid(record.data))
+        {
+            return false;
+        }
 
-
-bool Config::begin()
-{
-    loaded = false;
-    data = Settings::defaults();
-    ready = preferences.begin("cyber-bowl", false);
-    if (!ready) return false;
-
-    Stored<Settings::Data> saved{};
-    if (load(saved, VERSION) && Settings::valid(saved.data)) {
-        data = saved.data;
-        loaded = true;
+        currentSettings = record.data;
         return true;
     }
 
-    Stored<LegacyData> legacy{};
-    if (load(legacy, 1)) {
-        const auto migrated = migrate(legacy.data);
-        if (Settings::valid(migrated)) {
-            data = migrated;
-            loaded = true;
+    bool loadLegacySettings()
+    {
+        StoredRecord<LegacyData> record{};
+        if (!readStoredRecord(record, LEGACY_FORMAT_VERSION))
+        {
+            return false;
         }
+
+        const auto migrated = migrateLegacySettings(record.data);
+        if (!Settings::valid(migrated))
+        {
+            return false;
+        }
+
+        currentSettings = migrated;
+        return true;
     }
+
+    StoredRecord<Settings::Data> makeStoredRecord(const Settings::Data& settings)
+    {
+        StoredRecord<Settings::Data> record{};
+        record.magic = CONFIG_MAGIC;
+        record.version = CURRENT_FORMAT_VERSION;
+        record.size = sizeof(Settings::Data);
+        record.data = settings;
+        record.checksum = calculateChecksum(record.data);
+        return record;
+    }
+} // namespace
+
+bool Config::begin()
+{
+    currentSettings = Settings::defaults();
+    settingsLoaded = false;
+    storageAvailable = preferences.begin(NVS_NAMESPACE, false);
+    if (!storageAvailable)
+    {
+        return false;
+    }
+
+    // Try the current format first. Import v1 into RAM if needed.
+    // The next successful commit writes the current format.
+    settingsLoaded = loadCurrentSettings() || loadLegacySettings();
     return true;
 }
 
+const Settings::Data& Config::get()
+{
+    return currentSettings;
+}
 
-const Settings::Data& Config::get()     { return data; }
-bool Config::storageReady()             { return ready; }
-bool Config::loadedSavedSettings()      { return loaded; }
+bool Config::storageReady()
+{
+    return storageAvailable;
+}
 
+bool Config::loadedSavedSettings()
+{
+    return settingsLoaded;
+}
 
 bool Config::commit(const Settings::Data& candidate)
 {
-    if (!ready || !Settings::valid(candidate)) 
+    if (!storageAvailable || !Settings::valid(candidate))
+    {
         return false;
-    
-    Stored<Settings::Data> saved{};
-    saved.magic = MAGIC;
-    saved.version = VERSION;
-    saved.size = sizeof(Settings::Data);
-    saved.data = candidate;
-    saved.checksum = checksum(saved.data);
+    }
 
-    if (preferences.putBytes("config", &saved, sizeof(saved)) != sizeof(saved)) 
+    const auto record = makeStoredRecord(candidate);
+    if (preferences.putBytes(NVS_CONFIG_KEY, &record, sizeof(record)) != sizeof(record))
+    {
         return false;
-    
-    data = candidate;
+    }
+
+    // Publish only after NVS accepted the complete record.
+    currentSettings = candidate;
     return true;
 }

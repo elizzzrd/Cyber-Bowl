@@ -85,6 +85,8 @@ Auger auger;
 
 bool Auger::begin() { return true; }
 bool Auger::run(bool, uint32_t, uint32_t, uint32_t) { Fake::auger = true; Fake::augerSteps = 0; return true; }
+bool Auger::runTest(bool direction, uint32_t periodUs) { return run(direction, periodUs / 2, Settings::AUGER_TEST_STEPS, Settings::AUGER_TEST_TIMEOUT_MS); }
+void Auger::hold() { Fake::auger = true; }
 void Auger::stop() { Fake::auger = false; }
 bool Auger::running() { return Fake::auger; }
 bool Auger::timedOut() { return Fake::augerTimeout; }

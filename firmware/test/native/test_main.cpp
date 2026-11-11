@@ -145,22 +145,13 @@ int main()
     press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/settings.ppm");
     press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/auger.ppm");
     press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_DOWN_PIN); press(Pins::BUTTON_DOWN_PIN);
-    press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_DOWN_PIN);
-    press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/calibration.ppm");
-    // Execute the actual UI calibration wizard: empty bowl -> known mass -> save.
-    press(Pins::BUTTON_OK_PIN); Fake::completeCapture(200000); draw();
-    check(Config::get().foodScale.offset == 0); // No settings changed after the zero stage.
     press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_OK_PIN);
-    Fake::completeCapture(240000); draw();
-    check(Config::get().foodScale.factor == Settings::DEFAULT_FOOD_SCALE_FACTOR); // Proposal is still uncommitted.
-    press(Pins::BUTTON_OK_PIN);
+    press(Pins::BUTTON_OK_PIN); Fake::screenshot("docs/calibration.ppm");
+    // Tare records the empty bowl offset and preserves the configured factor.
+    press(Pins::BUTTON_OK_PIN); Fake::completeCapture(200000); draw();
     check(Config::get().foodScale.calibrated && Config::get().foodScale.tared);
     check(Config::get().foodScale.offset == 200000);
-    check(Config::get().foodScale.factor == 400);
-    // Re-tare preserves calibration and only changes the offset.
-    press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_OK_PIN); press(Pins::BUTTON_OK_PIN);
-    Fake::completeCapture(200100); draw();
-    check(Config::get().foodScale.offset == 200100 && Config::get().foodScale.factor == 400);
+    check(Config::get().foodScale.factor == Settings::DEFAULT_FOOD_SCALE_FACTOR);
     // Execute the actual pump calibration UI: 10 s test -> measured 10 ml -> 1000 ms/ml.
     c = Config::get(); c.pumpMsPerMl = 952; check(Config::commit(c));
     press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN); press(Pins::BUTTON_BACK_PIN);

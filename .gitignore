@@ -9,3 +9,6 @@ cyber_bowl_tests/.vscode
 firmware/settings.md
 flash.sh
 .gitinore
+/home/gardina_elizaveta/PlatformIO/Projects/cyber_bowl_main/firmware/test
+firmware/test/native
+*.ppm
